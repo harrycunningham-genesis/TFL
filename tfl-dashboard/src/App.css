@@ -305,6 +305,14 @@ footer {
   font-size: 24px;
 }
 
+/* Scoped to the TubeMap page only — centers the SVG map without touching
+   .page, which every other route also uses. */
+.tube-map-wrapper {
+  display: flex;
+  justify-content: center;
+  margin-top: 30px;
+}
+
 /* HOME */
 
 .home-page {
