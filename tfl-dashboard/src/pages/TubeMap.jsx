@@ -37,29 +37,55 @@ function TubeMap() {
 
       const lineWithStations = await Promise.all(
         tubeLines.map(async (line) => {
-          const response = await fetch(
-            `https://api.tfl.gov.uk/Line/${line.id}/StopPoints?app_key=${apiKey}`,
-          );
+          // Fetch both in parallel: StopPoints gives us every station (with
+          // lat/lon) but in no particular order, while Route/Sequence gives
+          // us the correct end-to-end order per branch.
+          const [stopPointsResponse, routeSequenceResponse] = await Promise.all([
+            fetch(
+              `https://api.tfl.gov.uk/Line/${line.id}/StopPoints?app_key=${apiKey}`,
+            ),
+            fetch(
+              `https://api.tfl.gov.uk/Line/${line.id}/Route/Sequence/outbound?app_key=${apiKey}`,
+            ),
+          ]);
 
           console.log(
             "[TubeMap] stopPoints response for",
             line.id,
             "status:",
-            response.status,
-            response.ok,
+            stopPointsResponse.status,
+            stopPointsResponse.ok,
+          );
+          console.log(
+            "[TubeMap] route sequence response for",
+            line.id,
+            "status:",
+            routeSequenceResponse.status,
+            routeSequenceResponse.ok,
           );
 
-          if (!response.ok) {
+          if (!stopPointsResponse.ok) {
             throw new Error("Failed to fetch Tube lines");
           }
+          if (!routeSequenceResponse.ok) {
+            throw new Error("Failed to fetch Tube line route sequence");
+          }
 
-          const stations = await response.json();
+          const stations = await stopPointsResponse.json();
+          const routeSequence = await routeSequenceResponse.json();
 
           console.log("[TubeMap] stations for", line.id, ":", stations);
+          console.log(
+            "[TubeMap] orderedLineRoutes for",
+            line.id,
+            ":",
+            routeSequence.orderedLineRoutes,
+          );
 
           return {
             ...line,
             stations,
+            orderedLineRoutes: routeSequence.orderedLineRoutes,
           };
         }),
       );
@@ -108,7 +134,8 @@ function TubeMap() {
     );
   }
 
-  // Example tube station data with geographic coordinates
+  /*
+
   const stations = [
     {
       id: "1",
@@ -148,9 +175,39 @@ function TubeMap() {
     { from: "3", to: "4", color: "#00A4A6" },
     { from: "4", to: "5", color: "#E32017" },
   ];
+  */
+
+  const stationMap = new Map();
+  lines.forEach((line) => {
+    line.stations.forEach((s) => {
+      if (!stationMap.has(s.naptanId)) {
+        stationMap.set(s.naptanId, {
+          id: s.naptanId,
+          name: s.commonName,
+          lat: s.lat,
+          lng: s.lon, // the TfL API calls it "lon", not "lng"
+        });
+      }
+    });
+  });
+  const stations = Array.from(stationMap.values());
+
+  // Connections: use the ordered per-branch naptanId sequences from
+  // /Route/Sequence (fetched above) instead of the StopPoints array's
+  // arbitrary order, so each branch is drawn following the real physical
+  // order of stations rather than jumping around.
+  const connections = [];
+  lines.forEach((line) => {
+    (line.orderedLineRoutes || []).forEach((route) => {
+      const ids = route.naptanIds || [];
+      for (let i = 0; i < ids.length - 1; i++) {
+        connections.push({ from: ids[i], to: ids[i + 1] });
+      }
+    });
+  });
 
   // 1. Derive the geographic bounding box FROM the actual station data,
-  // instead of hardcoding it — so it stays correct if the stations change.
+  // instead of hardcoding it — so it stays correct as the data changes.
   const lats = stations.map((s) => s.lat);
   const lngs = stations.map((s) => s.lng);
   const minLat = Math.min(...lats);
@@ -158,15 +215,14 @@ function TubeMap() {
   const minLng = Math.min(...lngs);
   const maxLng = Math.max(...lngs);
 
-  // Padding around the plotted content. The right side gets extra room
-  // because station labels are drawn to the right of each dot (x + 12) and
-  // need somewhere to go without being clipped by the SVG's edge — this is
-  // separate from the geographic math below and doesn't skew the real-world
-  // proportions of the data itself.
-  const paddingLeft = 50;
-  const paddingRight = 170;
-  const paddingTop = 50;
-  const paddingBottom = 50;
+  // We're no longer drawing on-canvas text labels (with ~270 stations that
+  // would just be an unreadable black smear), so a single uniform padding
+  // is enough — no need for extra label breathing room on the right.
+  const padding = 50;
+  const paddingLeft = padding;
+  const paddingRight = padding;
+  const paddingTop = padding;
+  const paddingBottom = padding;
 
   // 2. Correct for the fact that a degree of longitude covers less real-world
   // distance than a degree of latitude, the further you are from the equator.
@@ -181,7 +237,7 @@ function TubeMap() {
   // 3. Pick the SVG's content dimensions so their ratio matches the
   // corrected real-world ratio (whichever axis covers more ground gets the
   // larger pixel dimension), instead of a fixed, arbitrary 800x600.
-  const REFERENCE_SIZE = 700;
+  const REFERENCE_SIZE = 1800; 
   const realWorldAspect = lngSpanCorrected / latSpan; // width : height
 
   let contentWidth;
@@ -205,22 +261,22 @@ function TubeMap() {
   };
 
   return (
-    <div className="page">
-      <h1>Live Tube Map</h1>
+    <div className="tube-map-page">
+      <h1 class="tube-title">Live Tube Map</h1>
 
       <div className="tube-map-wrapper">
         <svg
-          // Internal coordinate system now reflects the true geographic ratio
           viewBox={`0 0 ${canvasWidth} ${canvasHeight}`}
           style={{
-            width: "80%",
-            maxWidth: `${canvasWidth}px`,
+            width: "auto",
             height: "auto",
+            maxWidth: "100%",
+            maxHeight: "calc(100vh - 190px)",
             border: "1px solid #ccc",
             background: "#fff",
           }}
         >
-        {/* Render Connection Lines (Tracks) */}
+        {/* Render Connection Lines (Tracks) — all black, no per-line color */}
         {connections.map((conn, index) => {
           const fromStation = stations.find((s) => s.id === conn.from);
           const toStation = stations.find((s) => s.id === conn.to);
@@ -236,42 +292,20 @@ function TubeMap() {
               y1={p1.y}
               x2={p2.x}
               y2={p2.y}
-              stroke={conn.color || "#333"}
-              strokeWidth="5"
+              stroke="black"
+              strokeWidth="1.5"
               strokeLinecap="round"
             />
           );
         })}
 
-        {/* Render Stations (Dots) and Labels */}
         {stations.map((station) => {
           const { x, y } = project(station.lat, station.lng);
 
           return (
-            <g key={station.id}>
-              {/* Outer circle for the "interchange" look */}
-              <circle
-                cx={x}
-                cy={y}
-                r="8"
-                fill="#fff"
-                stroke="#000"
-                strokeWidth="2"
-              />
-              {/* Inner dot representing the station center */}
-              <circle cx={x} cy={y} r="4" fill={station.color} />
-
-              {/* Station Label Text */}
-              <text
-                x={x + 12}
-                y={y + 4}
-                fontSize="12"
-                fontWeight="bold"
-                fill="#333"
-              >
-                {station.name}
-              </text>
-            </g>
+            <circle key={station.id} cx={x} cy={y} r="3" fill="black">
+              <title>{station.name}</title>
+            </circle>
           );
         })}
         </svg>

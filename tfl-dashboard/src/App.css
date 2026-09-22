@@ -305,12 +305,33 @@ footer {
   font-size: 24px;
 }
 
-/* Scoped to the TubeMap page only — centers the SVG map without touching
-   .page, which every other route also uses. */
+/* Scoped to the TubeMap page only — a wider, tighter container than
+   .page, so this route isn't stuck at .page's 1400px cap. Every other
+   route still uses .page and is untouched by this. */
+.tube-map-page {
+  max-width: 1900px;
+  margin: 0 auto;
+  padding: 24px 32px;
+}
+
 .tube-map-wrapper {
   display: flex;
   justify-content: center;
-  margin-top: 30px;
+  margin-top: 12px;
+}
+
+.tube-title {
+  text-align: center;
+  font-family: Arial, sans-serif;
+  font-size: 2.5rem;
+  font-weight: 700;
+  color: #2f82ff;
+  margin: 30px 0;
+  letter-spacing: 1px;
+  border-bottom: 4px solid #d50000;
+  width: fit-content;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 /* HOME */
