@@ -5,6 +5,7 @@ function TubeMap() {
   const [lines, setLines] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [trains, setTrains] = useState([]);
 
   async function fetchTubeLocations() {
     try {
@@ -107,6 +108,137 @@ function TubeMap() {
     console.log("[TubeMap] mounted, kicking off fetch");
     fetchTubeLocations();
   }, []);
+
+  // Roughly how long (in seconds) a train takes to travel between two
+  // adjacent stations. The Arrivals API only gives a countdown to the next
+  // station, not a total segment duration, so this is an assumption used to
+  // turn "45 seconds left" into "70% of the way along this segment" — TfL
+  // doesn't give us anything more precise than this to work with. Tune this
+  // single number if trains look like they're gliding too fast/slow.
+  const ASSUMED_SEGMENT_SECONDS = 90;
+
+  // Live train positions are ESTIMATED, not real GPS — TfL's API doesn't
+  // expose live train coordinates for the Underground at all. This works
+  // out, for every train the Arrivals feed currently knows about, which
+  // station it's heading to and (by looking that station up in the ordered
+  // route data we already fetched) which station it must have just left,
+  // then linearly interpolates a position between those two using the
+  // countdown above. It only updates once every 10 seconds, in a single
+  // combined API call for all 11 lines, to stay well inside the rate limit.
+  useEffect(() => {
+    // Wait until the initial line/station/route fetch above has completed —
+    // we need orderedLineRoutes and station coordinates before this is
+    // useful, both of which live on `lines`.
+    if (lines.length === 0) return undefined;
+
+    const apiKey = import.meta.env.VITE_TFL_API_KEY;
+
+    // naptanId -> {lat, lng} lookup, and line.id -> line object, both built
+    // once per `lines` update rather than refetched every 10-second tick.
+    const stationCoordsById = new Map();
+    const lineById = new Map();
+    lines.forEach((line) => {
+      lineById.set(line.id, line);
+      line.stations.forEach((s) => {
+        if (!stationCoordsById.has(s.naptanId)) {
+          stationCoordsById.set(s.naptanId, { lat: s.lat, lng: s.lon });
+        }
+      });
+    });
+
+    async function fetchTrainPositions() {
+      try {
+        // One combined call for every tube line, instead of 11 separate
+        // ones — /Line/{ids}/Arrivals accepts a comma-separated id list.
+        const lineIdsCsv = lines.map((line) => line.id).join(",");
+        const response = await fetch(
+          `https://api.tfl.gov.uk/Line/${lineIdsCsv}/Arrivals?app_key=${apiKey}`,
+        );
+
+        console.log(
+          "[TubeMap] arrivals response status:",
+          response.status,
+          response.ok,
+        );
+
+        if (!response.ok) {
+          throw new Error("Failed to fetch train arrivals");
+        }
+
+        const predictions = await response.json();
+
+        console.log("[TubeMap] arrivals predictions:", predictions);
+
+        // Key by vehicleId so the same physical train (which can appear
+        // more than once if the feed has predictions for it at several
+        // upcoming stops) only produces one dot — keeping whichever
+        // prediction has the smallest timeToStation, i.e. the most current.
+        const trainsByVehicleId = new Map();
+
+        predictions.forEach((prediction) => {
+          const line = lineById.get(prediction.lineId);
+          if (!line) return;
+
+          const existing = trainsByVehicleId.get(prediction.vehicleId);
+          if (existing && existing.timeToStation <= prediction.timeToStation) {
+            return;
+          }
+
+          // Find which branch of this line's route the destination station
+          // sits on, and its position within that branch's ordered list.
+          let toIndex = -1;
+          let routeIds = null;
+          (line.orderedLineRoutes || []).some((route) => {
+            const ids = route.naptanIds || [];
+            const index = ids.indexOf(prediction.naptanId);
+            if (index !== -1) {
+              toIndex = index;
+              routeIds = ids;
+              return true;
+            }
+            return false;
+          });
+          if (toIndex === -1) return;
+
+          // We only fetched the "outbound" ordering, so an inbound train is
+          // moving through that list backwards — its previous station is
+          // the NEXT entry in our array, not the one before it.
+          const previousIndex =
+            prediction.direction === "inbound" ? toIndex + 1 : toIndex - 1;
+          if (previousIndex < 0 || previousIndex >= routeIds.length) return;
+
+          const fromId = routeIds[previousIndex];
+          const toId = prediction.naptanId;
+          const fromCoords = stationCoordsById.get(fromId);
+          const toCoords = stationCoordsById.get(toId);
+          if (!fromCoords || !toCoords) return;
+
+          const progress = Math.min(
+            1,
+            Math.max(0, 1 - prediction.timeToStation / ASSUMED_SEGMENT_SECONDS),
+          );
+
+          trainsByVehicleId.set(prediction.vehicleId, {
+            id: prediction.vehicleId,
+            lineId: prediction.lineId,
+            timeToStation: prediction.timeToStation,
+            lat: fromCoords.lat + (toCoords.lat - fromCoords.lat) * progress,
+            lng: fromCoords.lng + (toCoords.lng - fromCoords.lng) * progress,
+          });
+        });
+
+        const nextTrains = Array.from(trainsByVehicleId.values());
+        console.log("[TubeMap] computed train positions:", nextTrains);
+        setTrains(nextTrains);
+      } catch (err) {
+        console.error("[TubeMap] fetchTrainPositions failed:", err);
+      }
+    }
+
+    fetchTrainPositions();
+    const intervalId = setInterval(fetchTrainPositions, 10000);
+    return () => clearInterval(intervalId);
+  }, [lines]);
 
   console.log(
     "[TubeMap] render — loading:",
@@ -357,6 +489,25 @@ function TubeMap() {
             >
               <title>{station.name}</title>
             </circle>
+          );
+        })}
+
+        {/* Trains — plain white with a black outline so they're visible
+            against the white SVG background (a pure white fill alone would
+            be invisible), drawn last so they sit on top of everything. */}
+        {trains.map((train) => {
+          const { x, y } = project(train.lat, train.lng);
+
+          return (
+            <circle
+              key={train.id}
+              cx={x}
+              cy={y}
+              r="4"
+              fill="white"
+              stroke="black"
+              strokeWidth="1"
+            />
           );
         })}
         </svg>
