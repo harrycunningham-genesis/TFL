@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { getLineColour } from "../constants/lineColours";
 
 function TubeMap() {
   const [lines, setLines] = useState([]);
@@ -186,25 +187,50 @@ function TubeMap() {
           name: s.commonName,
           lat: s.lat,
           lng: s.lon, // the TfL API calls it "lon", not "lng"
+          // Interchange stations (e.g. Oxford Circus) sit on several lines,
+          // but a dot can only show one colour — it just takes whichever
+          // line's stop data we happened to process first.
+          lineId: line.id,
         });
       }
     });
   });
   const stations = Array.from(stationMap.values());
 
-  // Connections: use the ordered per-branch naptanId sequences from
-  // /Route/Sequence (fetched above) instead of the StopPoints array's
-  // arbitrary order, so each branch is drawn following the real physical
-  // order of stations rather than jumping around.
   const connections = [];
   lines.forEach((line) => {
     (line.orderedLineRoutes || []).forEach((route) => {
       const ids = route.naptanIds || [];
       for (let i = 0; i < ids.length - 1; i++) {
-        connections.push({ from: ids[i], to: ids[i + 1] });
+        connections.push({ from: ids[i], to: ids[i + 1], lineId: line.id });
       }
     });
   });
+
+  // Several lines share the exact same physical track for long stretches
+  // (Circle/District/Hammersmith & City especially) — group connections by
+  // the station pair they connect (regardless of direction) so we know how
+  // many distinct lines are drawn on top of each other for that stretch.
+  // Rendering below uses this to nudge each line sideways into its own
+  // parallel strand instead of one colour hiding the others.
+  const edgeLineGroups = new Map();
+  connections.forEach((conn) => {
+    const [a, b] = [conn.from, conn.to].sort();
+    const edgeKey = `${a}|${b}`;
+    if (!edgeLineGroups.has(edgeKey)) {
+      edgeLineGroups.set(edgeKey, []);
+    }
+    const group = edgeLineGroups.get(edgeKey);
+    if (!group.includes(conn.lineId)) {
+      group.push(conn.lineId);
+    }
+  });
+
+  // Gap between parallel strands when lines share a track — keep this
+  // bigger than the strokeWidth set on the <line> below (currently 4),
+  // otherwise thick strands touch/overlap instead of showing a visible
+  // gap. Adjust this single number to tighten or loosen the spacing.
+  const PARALLEL_LINE_SPACING = 6;
 
   // 1. Derive the geographic bounding box FROM the actual station data,
   // instead of hardcoding it — so it stays correct as the data changes.
@@ -262,7 +288,7 @@ function TubeMap() {
 
   return (
     <div className="tube-map-page">
-      <h1 class="tube-title">Live Tube Map</h1>
+      <h1 className="tube-title">Live Tube Map</h1>
 
       <div className="tube-map-wrapper">
         <svg
@@ -276,7 +302,6 @@ function TubeMap() {
             background: "#fff",
           }}
         >
-        {/* Render Connection Lines (Tracks) — all black, no per-line color */}
         {connections.map((conn, index) => {
           const fromStation = stations.find((s) => s.id === conn.from);
           const toStation = stations.find((s) => s.id === conn.to);
@@ -285,15 +310,35 @@ function TubeMap() {
           const p1 = project(fromStation.lat, fromStation.lng);
           const p2 = project(toStation.lat, toStation.lng);
 
+          // Where this line sits within the group of lines sharing this
+          // exact edge — centred on 0, so a single line on its own gets no
+          // offset at all, and a shared edge spreads its lines evenly
+          // either side of the true geographic position.
+          const [a, b] = [conn.from, conn.to].sort();
+          const group = edgeLineGroups.get(`${a}|${b}`) || [conn.lineId];
+          const offsetIndex = group.indexOf(conn.lineId) - (group.length - 1) / 2;
+
+          // Measure direction canonically as "a -> b" (flipping sign if this
+          // connection actually runs b -> a), so lines sharing this edge
+          // but recorded in opposite directions by their own route still
+          // offset the same way, instead of being pushed onto opposite
+          // sides and crossing each other.
+          const directionSign = conn.from === a ? 1 : -1;
+          const dx = (p2.x - p1.x) * directionSign;
+          const dy = (p2.y - p1.y) * directionSign;
+          const segmentLength = Math.hypot(dx, dy) || 1;
+          const offsetX = (-dy / segmentLength) * offsetIndex * PARALLEL_LINE_SPACING;
+          const offsetY = (dx / segmentLength) * offsetIndex * PARALLEL_LINE_SPACING;
+
           return (
             <line
               key={`line-${index}`}
-              x1={p1.x}
-              y1={p1.y}
-              x2={p2.x}
-              y2={p2.y}
-              stroke="black"
-              strokeWidth="1.5"
+              x1={p1.x + offsetX}
+              y1={p1.y + offsetY}
+              x2={p2.x + offsetX}
+              y2={p2.y + offsetY}
+              stroke={getLineColour(conn.lineId)}
+              strokeWidth="4"
               strokeLinecap="round"
             />
           );
@@ -303,7 +348,13 @@ function TubeMap() {
           const { x, y } = project(station.lat, station.lng);
 
           return (
-            <circle key={station.id} cx={x} cy={y} r="3" fill="black">
+            <circle
+              key={station.id}
+              cx={x}
+              cy={y}
+              r="5"
+              fill={getLineColour(station.lineId)}
+            >
               <title>{station.name}</title>
             </circle>
           );
