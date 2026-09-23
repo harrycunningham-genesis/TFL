@@ -5,6 +5,8 @@ import { getLineColor } from "../utils/lineColors";
 
 const API_KEY = import.meta.env.VITE_TFL_API_KEY;
 const RECENTS_KEY = "tfl_recent_stations";
+const RAIL_MODES = ["tube", "overground", "dlr", "elizabeth-line", "tram"];
+const RAIL_MODES_PARAM = RAIL_MODES.join(",");
 
 function StationField({ label, query, setQuery, station, setStation, suggestions, setSuggestions, onSearch }) {
   const [recents, setRecents] = useState(() => getRecentStations(RECENTS_KEY));
@@ -95,20 +97,23 @@ function TripPlanner() {
 
   async function resolveStopId(id) {
     // Interchange stations (e.g. King's Cross) resolve to a hub id that the
-    // Journey Planner can't route from directly — look up its tube-specific
+    // Journey Planner can't route from directly — look up a rail-specific
     // child stop instead. Some stations (e.g. Amersham) have no child tagged
-    // "tube" at all because the Underground platforms are grouped under
-    // National Rail in TfL's data — fall back to any child rather than
-    // leaving the unresolved hub id, which the API rejects as ambiguous.
+    // with any of our rail modes because the Underground/Overground/etc
+    // platforms are grouped under National Rail in TfL's data — fall back to
+    // any child rather than leaving the unresolved hub id, which the API
+    // rejects as ambiguous.
     if (!id.startsWith("HUB")) return id;
 
     const response = await fetch(
       `https://api.tfl.gov.uk/StopPoint/${id}?app_key=${API_KEY}`,
     );
     const data = await response.json();
-    const tubeChild = data.children?.find((child) => child.modes?.includes("tube"));
+    const railChild = data.children?.find((child) =>
+      child.modes?.some((mode) => RAIL_MODES.includes(mode)),
+    );
 
-    return tubeChild ? tubeChild.id : data.children?.[0]?.id || id;
+    return railChild ? railChild.id : data.children?.[0]?.id || id;
   }
 
   function swapStations() {
@@ -123,7 +128,7 @@ function TripPlanner() {
 
   async function searchStations(value, setSuggestions) {
     const response = await fetch(
-      `https://api.tfl.gov.uk/StopPoint/Search/${encodeURIComponent(value)}?modes=tube,overground,dlr,elizabeth-line&app_key=${API_KEY}`,
+      `https://api.tfl.gov.uk/StopPoint/Search/${encodeURIComponent(value)}?modes=${RAIL_MODES_PARAM}&app_key=${API_KEY}`,
     );
     const data = await response.json();
     setSuggestions(data.matches || []);

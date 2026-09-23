@@ -2,6 +2,24 @@ import { useState, useEffect } from "react";
 
 import { getLineColor } from "../utils/lineColors";
 
+const MODE_ORDER = ["tube", "overground", "dlr", "elizabeth-line", "tram", "national-rail"];
+const MODE_LABELS = {
+  tube: "Underground",
+  overground: "Overground",
+  dlr: "DLR",
+  "elizabeth-line": "Elizabeth line",
+  tram: "Trams",
+  "national-rail": "National Rail",
+};
+
+// TfL's live Arrivals API has no real-time predictions for National Rail
+// operators (they run their own separate systems) — but it does track
+// service-level status for some of them. Thameslink calls at several
+// stations this app already covers (Farringdon, St Pancras), so it's
+// listed here even though it isn't part of the tube/overground/etc modes
+// above. Add more national-rail line ids here if useful later.
+const NATIONAL_RAIL_LINES = ["thameslink"];
+
 function LineStatus() {
   const [lines, setLines] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -13,17 +31,23 @@ function LineStatus() {
 
       const apiKey = import.meta.env.VITE_TFL_API_KEY;
 
-      const response = await fetch(
-        `https://api.tfl.gov.uk/Line/Mode/tube/Status?app_key=${apiKey}`,
-      );
+      const [tflResponse, nationalRailResponse] = await Promise.all([
+        fetch(
+          `https://api.tfl.gov.uk/Line/Mode/tube,overground,dlr,elizabeth-line,tram/Status?app_key=${apiKey}`,
+        ),
+        fetch(
+          `https://api.tfl.gov.uk/Line/${NATIONAL_RAIL_LINES.join(",")}/Status?app_key=${apiKey}`,
+        ),
+      ]);
 
-      if (!response.ok) {
-        throw new Error("Failed to fetch Tube status");
+      if (!tflResponse.ok) {
+        throw new Error("Failed to fetch line status");
       }
 
-      const data = await response.json();
+      const tflLines = await tflResponse.json();
+      const nationalRailLines = nationalRailResponse.ok ? await nationalRailResponse.json() : [];
 
-      setLines(data);
+      setLines([...tflLines, ...nationalRailLines]);
       setError(null);
     } catch (err) {
       setError(err.message);
@@ -44,47 +68,59 @@ function LineStatus() {
   return (
     <div className="page">
       <h1>Line Status</h1>
-      <p>Live service information from Transport for London</p>
+      <p>Live service information for the Tube, Overground, DLR, Elizabeth line and Trams</p>
 
       <button onClick={fetchTubeStatus}>Refresh</button>
 
-      {loading && <p>Loading Tube status...</p>}
+      {loading && <p>Loading line status...</p>}
 
       {error && <p className="error">{error}</p>}
 
-      <main className="line-grid">
-        {lines.map((line) => {
-          const status = line.lineStatuses?.[0];
-          const color = getLineColor(line.name);
+      {MODE_ORDER.map((mode) => {
+        const modeLines = lines.filter((line) => line.modeName === mode);
 
-          return (
-            <div
-              className="line-card"
-              key={line.id}
-              style={{ borderLeft: `6px solid ${color.bg}` }}
-            >
-              <div className="line-header">
-                <h2>
-                  <span className="line-swatch" style={{ backgroundColor: color.bg }} />
-                  {line.name}
-                </h2>
+        if (modeLines.length === 0) return null;
 
-                <span
-                  className={`status ${
-                    status?.statusSeverityDescription === "Good Service"
-                      ? "good"
-                      : "warning"
-                  }`}
-                >
-                  {status?.statusSeverityDescription || "Unknown"}
-                </span>
-              </div>
+        return (
+          <section className="mode-section" key={mode}>
+            <h2 className="mode-section-title">{MODE_LABELS[mode]}</h2>
 
-              {status?.reason && <p className="reason">{status.reason}</p>}
+            <div className="line-grid">
+              {modeLines.map((line) => {
+                const status = line.lineStatuses?.[0];
+                const color = getLineColor(line.name);
+
+                return (
+                  <div
+                    className="line-card"
+                    key={line.id}
+                    style={{ borderLeft: `6px solid ${color.bg}` }}
+                  >
+                    <div className="line-header">
+                      <h3>
+                        <span className="line-swatch" style={{ backgroundColor: color.bg }} />
+                        {line.name}
+                      </h3>
+
+                      <span
+                        className={`status ${
+                          status?.statusSeverityDescription === "Good Service"
+                            ? "good"
+                            : "warning"
+                        }`}
+                      >
+                        {status?.statusSeverityDescription || "Unknown"}
+                      </span>
+                    </div>
+
+                    {status?.reason && <p className="reason">{status.reason}</p>}
+                  </div>
+                );
+              })}
             </div>
-          );
-        })}
-      </main>
+          </section>
+        );
+      })}
 
       <footer>Data provided by Transport for London</footer>
     </div>
