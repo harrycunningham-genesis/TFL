@@ -1,5 +1,7 @@
 import { useState, useEffect } from "react";
 
+import { getLineColor } from "../utils/lineColors";
+
 function LineStatus() {
   const [lines, setLines] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -53,11 +55,19 @@ function LineStatus() {
       <main className="line-grid">
         {lines.map((line) => {
           const status = line.lineStatuses?.[0];
+          const color = getLineColor(line.name);
 
           return (
-            <div className="line-card" key={line.id}>
+            <div
+              className="line-card"
+              key={line.id}
+              style={{ borderLeft: `6px solid ${color.bg}` }}
+            >
               <div className="line-header">
-                <h2>{line.name}</h2>
+                <h2>
+                  <span className="line-swatch" style={{ backgroundColor: color.bg }} />
+                  {line.name}
+                </h2>
 
                 <span
                   className={`status ${

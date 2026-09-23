@@ -1,6 +1,10 @@
 import { useState, useEffect } from "react";
 
+import { getRecentStations, addRecentStation } from "../utils/recentStations";
+import { getLineColor } from "../utils/lineColors";
+
 const API_KEY = import.meta.env.VITE_TFL_API_KEY;
+const RECENTS_KEY = "tfl_recent_stations";
 
 function Stations() {
   const [query, setQuery] = useState("");
@@ -9,6 +13,9 @@ function Stations() {
   const [arrivals, setArrivals] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [recents, setRecents] = useState(() => getRecentStations(RECENTS_KEY));
+  const [focused, setFocused] = useState(false);
+  const [filter, setFilter] = useState("all");
 
 
   useEffect(() => {
@@ -57,6 +64,25 @@ function Stations() {
     setLoading(false);
   }
 }
+function cleanStationName(name) {
+  return name ? name.replace(/\s*Underground Station$/i, "").trim() : name;
+}
+
+function isSameStation(nameA, nameB) {
+  if (!nameA || !nameB) return false;
+  return cleanStationName(nameA).toLowerCase() === cleanStationName(nameB).toLowerCase();
+}
+
+function isTerminatingArrival(p, stationName) {
+  const isUnknownDestination = p.towards?.toLowerCase() === "check front of train";
+
+  return (
+    !p.destinationName ||
+    isUnknownDestination ||
+    isSameStation(p.destinationName, stationName)
+  );
+}
+
 function groupArrivals(predictions) {
   const sorted = [...predictions].sort((a, b) => a.timeToStation - b.timeToStation);
 
@@ -96,13 +122,25 @@ async function resolveStopId(id) {
 async function selectStation(match) {
   setQuery("");
   setSuggestions([]);
+  setFocused(false);
+  setFilter("all");
+  setRecents(addRecentStation(RECENTS_KEY, { id: match.id, name: match.name }));
 
   const stopId = await resolveStopId(match.id);
 
   setStation({ ...match, id: stopId });
   fetchArrivals(stopId);
 }
-const board = groupArrivals(arrivals);
+
+const filteredArrivals = arrivals.filter((p) => {
+  if (filter === "all") return true;
+
+  const terminating = isTerminatingArrival(p, station?.name);
+
+  return filter === "departing" ? !terminating : terminating;
+});
+
+const board = groupArrivals(filteredArrivals);
 
 
   return (
@@ -120,8 +158,27 @@ const board = groupArrivals(arrivals);
             className="station-input"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setTimeout(() => setFocused(false), 150)}
             placeholder="Search for a station"
           />
+
+          {query.trim().length === 0 && focused && recents.length > 0 && (
+            <ul className="suggestions">
+              <li className="suggestions-label">Recent</li>
+              {recents.map((match) => (
+                <li key={match.id}>
+                  <button
+                    type="button"
+                    className="suggestion-item"
+                    onClick={() => selectStation(match)}
+                  >
+                    {match.name}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
 
           {suggestions.length > 0 && (
             <ul className="suggestions">
@@ -167,17 +224,60 @@ const board = groupArrivals(arrivals);
             <p>No live arrivals available for this station right now.</p>
           )}
 
+          {!loading && !error && arrivals.length > 0 && (
+            <div className="filter-tabs">
+              <button
+                type="button"
+                className={`filter-tab ${filter === "all" ? "active" : ""}`}
+                onClick={() => setFilter("all")}
+              >
+                All
+              </button>
+              <button
+                type="button"
+                className={`filter-tab ${filter === "departing" ? "active" : ""}`}
+                onClick={() => setFilter("departing")}
+              >
+                Departing
+              </button>
+              <button
+                type="button"
+                className={`filter-tab ${filter === "terminating" ? "active" : ""}`}
+                onClick={() => setFilter("terminating")}
+              >
+                Ends here
+              </button>
+            </div>
+          )}
+
+          {!loading && !error && arrivals.length > 0 && filteredArrivals.length === 0 && (
+            <p>
+              {filter === "departing"
+                ? "No departing trains right now — every arrival ends at this station."
+                : "No trains ending here right now."}
+            </p>
+          )}
+
           {Object.entries(board).map(([platform, predictions]) => (
             <div className="platform-group" key={platform}>
               <h3>{platform}</h3>
               <ul className="arrivals-list">
                 {predictions.map((p) => {
-                  const isTerminating = !p.destinationName;
+                  const isUnknownDestination = p.towards?.toLowerCase() === "check front of train";
+                  const isTerminating = isTerminatingArrival(p, station.name);
 
                   return (
                     <li className="arrival-card" key={p.id}>
                       <div className="arrival-info">
-                        <span className="arrival-line">{p.lineName}</span>
+                        <span
+                          className="arrival-line"
+                          style={{
+                            backgroundColor: getLineColor(p.lineName).bg,
+                            color: getLineColor(p.lineName).text,
+                          }}
+                        >
+                          {p.lineName}
+                        </span>
                         <span
                           className={`arrival-status ${
                             isTerminating ? "terminating" : "departing"
@@ -186,9 +286,11 @@ const board = groupArrivals(arrivals);
                           {isTerminating ? "Arriving • ends here" : "Departing"}
                         </span>
                         <span className="arrival-destination">
-                          {isTerminating
-                            ? `via ${p.towards}`
-                            : `towards ${p.destinationName}`}
+                          {isUnknownDestination
+                            ? "Check the front of the train for its destination"
+                            : isTerminating
+                              ? "Terminates at this station"
+                              : `towards ${cleanStationName(p.destinationName)}`}
                         </span>
                       </div>
                       <span className="arrival-time">

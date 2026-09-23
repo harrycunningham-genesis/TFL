@@ -1,8 +1,15 @@
 import { useState } from "react";
 
+import { getRecentStations, addRecentStation } from "../utils/recentStations";
+import { getLineColor } from "../utils/lineColors";
+
 const API_KEY = import.meta.env.VITE_TFL_API_KEY;
+const RECENTS_KEY = "tfl_recent_stations";
 
 function StationField({ label, query, setQuery, station, setStation, suggestions, setSuggestions, onSearch }) {
+  const [recents, setRecents] = useState(() => getRecentStations(RECENTS_KEY));
+  const [focused, setFocused] = useState(false);
+
   async function handleChange(value) {
     setQuery(value);
     setStation(null);
@@ -19,6 +26,8 @@ function StationField({ label, query, setQuery, station, setStation, suggestions
     setStation(match);
     setQuery(match.name);
     setSuggestions([]);
+    setFocused(false);
+    setRecents(addRecentStation(RECENTS_KEY, { id: match.id, name: match.name }));
   }
 
   return (
@@ -29,8 +38,27 @@ function StationField({ label, query, setQuery, station, setStation, suggestions
         className="station-input"
         value={query}
         onChange={(e) => handleChange(e.target.value)}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setTimeout(() => setFocused(false), 150)}
         placeholder="Search for a station"
       />
+
+      {query.trim().length === 0 && focused && recents.length > 0 && (
+        <ul className="suggestions">
+          <li className="suggestions-label">Recent</li>
+          {recents.map((match) => (
+            <li key={match.id}>
+              <button
+                type="button"
+                className="suggestion-item"
+                onClick={() => selectStation(match)}
+              >
+                {match.name}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
 
       {suggestions.length > 0 && (
         <ul className="suggestions">
@@ -83,6 +111,16 @@ function TripPlanner() {
     return tubeChild ? tubeChild.id : data.children?.[0]?.id || id;
   }
 
+  function swapStations() {
+    setFromQuery(toQuery);
+    setFromStation(toStation);
+    setFromSuggestions([]);
+
+    setToQuery(fromQuery);
+    setToStation(fromStation);
+    setToSuggestions([]);
+  }
+
   async function searchStations(value, setSuggestions) {
     const response = await fetch(
       `https://api.tfl.gov.uk/StopPoint/Search/${encodeURIComponent(value)}?modes=tube,overground,dlr,elizabeth-line&app_key=${API_KEY}`,
@@ -94,8 +132,16 @@ function TripPlanner() {
   async function planJourney() {
     if (!fromStation || !toStation) return;
 
+    if (fromStation.id === toStation.id) {
+      setJourneys([]);
+      setError("Please choose two different stations.");
+      setSearched(true);
+      return;
+    }
+
     try {
       setLoading(true);
+      setError(null);
 
       const fromId = await resolveStopId(fromStation.id);
       const toId = await resolveStopId(toStation.id);
@@ -105,15 +151,17 @@ function TripPlanner() {
       );
 
       if (!response.ok) {
-        throw new Error("Failed to plan journey");
+        throw new Error(
+          "We couldn't plan a journey between these stations. Please try again in a moment.",
+        );
       }
 
       const data = await response.json();
       const sorted = [...(data.journeys || [])].sort((a, b) => a.duration - b.duration);
 
       setJourneys(sorted);
-      setError(null);
     } catch (err) {
+      setJourneys([]);
       setError(err.message);
     } finally {
       setLoading(false);
@@ -145,6 +193,17 @@ function TripPlanner() {
           onSearch={(value) => searchStations(value, setFromSuggestions)}
         />
 
+        <button
+          type="button"
+          className="swap-button"
+          onClick={swapStations}
+          disabled={!fromQuery && !toQuery}
+          aria-label="Swap from and to stations"
+          title="Swap stations"
+        >
+          ⇄
+        </button>
+
         <StationField
           label="To"
           query={toQuery}
@@ -167,12 +226,22 @@ function TripPlanner() {
 
       {error && <p className="error">{error}</p>}
 
-      {searched && !loading && !error && (
+      {searched && !loading && !error && journeys.length > 0 && (
         <p className="results-count">
-          {journeys.length > 0
-            ? `${journeys.length} route${journeys.length === 1 ? "" : "s"} found, fastest first`
-            : "No routes found between these stations."}
+          {journeys.length} route{journeys.length === 1 ? "" : "s"} found, fastest first
         </p>
+      )}
+
+      {searched && !loading && !error && journeys.length === 0 && (
+        <div className="no-results">
+          <span className="no-results-icon">🧭</span>
+          <h3>No routes found</h3>
+          <p>
+            TfL couldn't find a journey between {fromStation?.name} and {toStation?.name}.
+            Double-check both stations, or try again — services may be too disrupted
+            right now to plan a route.
+          </p>
+        </div>
       )}
 
       <div className="journeys">
@@ -191,15 +260,29 @@ function TripPlanner() {
             </span>
 
             <ul className="legs-list">
-              {journey.legs.map((leg, legIndex) => (
-                <li className="leg-item" key={legIndex}>
-                  <span className="leg-mode">{leg.mode?.name}</span>
-                  <span className="leg-instruction">{leg.instruction?.summary}</span>
-                  <span className="leg-time">
-                    {formatTime(leg.departureTime)} – {formatTime(leg.arrivalTime)}
-                  </span>
-                </li>
-              ))}
+              {journey.legs.map((leg, legIndex) => {
+                const lineName = leg.routeOptions?.[0]?.name;
+                const color = lineName ? getLineColor(lineName) : null;
+
+                return (
+                  <li className="leg-item" key={legIndex}>
+                    <span
+                      className="leg-mode"
+                      style={
+                        color
+                          ? { backgroundColor: color.bg, color: color.text }
+                          : undefined
+                      }
+                    >
+                      {lineName || leg.mode?.name}
+                    </span>
+                    <span className="leg-instruction">{leg.instruction?.summary}</span>
+                    <span className="leg-time">
+                      {formatTime(leg.departureTime)} – {formatTime(leg.arrivalTime)}
+                    </span>
+                  </li>
+                );
+              })}
             </ul>
           </div>
         ))}
