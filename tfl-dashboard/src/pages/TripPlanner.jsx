@@ -1,8 +1,14 @@
 import { useState } from "react";
 
+import { getRecentStations, addRecentStation } from "../utils/recentStations";
+
 const API_KEY = import.meta.env.VITE_TFL_API_KEY;
+const RECENTS_KEY = "tfl_recent_stations";
 
 function StationField({ label, query, setQuery, station, setStation, suggestions, setSuggestions, onSearch }) {
+  const [recents, setRecents] = useState(() => getRecentStations(RECENTS_KEY));
+  const [focused, setFocused] = useState(false);
+
   async function handleChange(value) {
     setQuery(value);
     setStation(null);
@@ -19,6 +25,8 @@ function StationField({ label, query, setQuery, station, setStation, suggestions
     setStation(match);
     setQuery(match.name);
     setSuggestions([]);
+    setFocused(false);
+    setRecents(addRecentStation(RECENTS_KEY, { id: match.id, name: match.name }));
   }
 
   return (
@@ -29,8 +37,27 @@ function StationField({ label, query, setQuery, station, setStation, suggestions
         className="station-input"
         value={query}
         onChange={(e) => handleChange(e.target.value)}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setTimeout(() => setFocused(false), 150)}
         placeholder="Search for a station"
       />
+
+      {query.trim().length === 0 && focused && recents.length > 0 && (
+        <ul className="suggestions">
+          <li className="suggestions-label">Recent</li>
+          {recents.map((match) => (
+            <li key={match.id}>
+              <button
+                type="button"
+                className="suggestion-item"
+                onClick={() => selectStation(match)}
+              >
+                {match.name}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
 
       {suggestions.length > 0 && (
         <ul className="suggestions">
@@ -81,6 +108,16 @@ function TripPlanner() {
     const tubeChild = data.children?.find((child) => child.modes?.includes("tube"));
 
     return tubeChild ? tubeChild.id : data.children?.[0]?.id || id;
+  }
+
+  function swapStations() {
+    setFromQuery(toQuery);
+    setFromStation(toStation);
+    setFromSuggestions([]);
+
+    setToQuery(fromQuery);
+    setToStation(fromStation);
+    setToSuggestions([]);
   }
 
   async function searchStations(value, setSuggestions) {
@@ -144,6 +181,17 @@ function TripPlanner() {
           setSuggestions={setFromSuggestions}
           onSearch={(value) => searchStations(value, setFromSuggestions)}
         />
+
+        <button
+          type="button"
+          className="swap-button"
+          onClick={swapStations}
+          disabled={!fromQuery && !toQuery}
+          aria-label="Swap from and to stations"
+          title="Swap stations"
+        >
+          ⇄
+        </button>
 
         <StationField
           label="To"

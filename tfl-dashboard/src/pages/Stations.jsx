@@ -1,6 +1,9 @@
 import { useState, useEffect } from "react";
 
+import { getRecentStations, addRecentStation } from "../utils/recentStations";
+
 const API_KEY = import.meta.env.VITE_TFL_API_KEY;
+const RECENTS_KEY = "tfl_recent_stations";
 
 function Stations() {
   const [query, setQuery] = useState("");
@@ -9,6 +12,8 @@ function Stations() {
   const [arrivals, setArrivals] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [recents, setRecents] = useState(() => getRecentStations(RECENTS_KEY));
+  const [focused, setFocused] = useState(false);
 
 
   useEffect(() => {
@@ -96,6 +101,8 @@ async function resolveStopId(id) {
 async function selectStation(match) {
   setQuery("");
   setSuggestions([]);
+  setFocused(false);
+  setRecents(addRecentStation(RECENTS_KEY, { id: match.id, name: match.name }));
 
   const stopId = await resolveStopId(match.id);
 
@@ -120,8 +127,27 @@ const board = groupArrivals(arrivals);
             className="station-input"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setTimeout(() => setFocused(false), 150)}
             placeholder="Search for a station"
           />
+
+          {query.trim().length === 0 && focused && recents.length > 0 && (
+            <ul className="suggestions">
+              <li className="suggestions-label">Recent</li>
+              {recents.map((match) => (
+                <li key={match.id}>
+                  <button
+                    type="button"
+                    className="suggestion-item"
+                    onClick={() => selectStation(match)}
+                  >
+                    {match.name}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
 
           {suggestions.length > 0 && (
             <ul className="suggestions">

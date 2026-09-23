@@ -476,6 +476,16 @@ footer {
   box-shadow: none;
 }
 
+.suggestions-label {
+  padding: 6px 12px 4px;
+
+  color: #94a3b8;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
 .station-header {
   display: flex;
   justify-content: space-between;
@@ -612,6 +622,33 @@ footer {
   flex: 1;
   min-width: 240px;
   margin-top: 0;
+}
+
+.swap-button {
+  flex-shrink: 0;
+  align-self: flex-end;
+  margin-bottom: 1px;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+
+  background: #ffffff;
+  color: #2563eb;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+
+  font-size: 18px;
+  line-height: 1;
+}
+
+.swap-button:hover {
+  background: #f8fafc;
+  box-shadow: none;
+}
+
+.swap-button:disabled {
+  color: #94a3b8;
+  cursor: not-allowed;
 }
 
 .field-label {
