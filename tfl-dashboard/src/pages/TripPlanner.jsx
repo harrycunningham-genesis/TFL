@@ -68,7 +68,10 @@ function TripPlanner() {
   async function resolveStopId(id) {
     // Interchange stations (e.g. King's Cross) resolve to a hub id that the
     // Journey Planner can't route from directly — look up its tube-specific
-    // child stop instead.
+    // child stop instead. Some stations (e.g. Amersham) have no child tagged
+    // "tube" at all because the Underground platforms are grouped under
+    // National Rail in TfL's data — fall back to any child rather than
+    // leaving the unresolved hub id, which the API rejects as ambiguous.
     if (!id.startsWith("HUB")) return id;
 
     const response = await fetch(
@@ -77,7 +80,7 @@ function TripPlanner() {
     const data = await response.json();
     const tubeChild = data.children?.find((child) => child.modes?.includes("tube"));
 
-    return tubeChild ? tubeChild.id : id;
+    return tubeChild ? tubeChild.id : data.children?.[0]?.id || id;
   }
 
   async function searchStations(value, setSuggestions) {
