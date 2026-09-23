@@ -1,47 +1,55 @@
 import { useState, useEffect } from "react";
+import { MapContainer, TileLayer, Polyline, CircleMarker, Tooltip } from "react-leaflet";
 import { getLineColour } from "../constants/lineColours";
+import "leaflet/dist/leaflet.css";
+
+// Roughly centred on central London — a sensible starting point before the
+// map auto-fits to wherever the fetched stations actually are.
+const LONDON_CENTER = [51.5074, -0.1278];
+const INITIAL_ZOOM = 11;
+
+// A single line is drawn at this weight (in pixels). Where two or more
+// lines share the exact same physical track (Circle/District/Hammersmith &
+// City especially), each one is nudged sideways into its own parallel
+// strand at this same weight rather than stacking on top of each other —
+// so a shared stretch reads as roughly double the width of a normal line,
+// with every colour actually visible instead of the last one drawn hiding
+// the rest.
+const LINE_WEIGHT = 3;
+const SHARED_TRACK_SPACING_METERS = 25;
+
+// Approximate metres per degree of latitude — used to convert the sideways
+// offset above into a lat/lng nudge. Longitude is corrected for London's
+// latitude (a degree of longitude covers less ground the further you are
+// from the equator).
+const METERS_PER_DEGREE_LAT = 111320;
 
 function TubeMap() {
   const [lines, setLines] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [trains, setTrains] = useState([]);
 
   async function fetchTubeLocations() {
     try {
       setLoading(true);
 
       const apiKey = import.meta.env.VITE_TFL_API_KEY;
-      console.log(
-        "[TubeMap] apiKey present?",
-        Boolean(apiKey),
-        "length:",
-        apiKey?.length,
-      );
 
       const linesResponse = await fetch(
         `https://api.tfl.gov.uk/Line/Mode/tube?app_key=${apiKey}`,
       );
-
-      console.log(
-        "[TubeMap] lines response status:",
-        linesResponse.status,
-        linesResponse.ok,
-      );
-
       if (!linesResponse.ok) {
         throw new Error("Failed to fetch Tube lines");
       }
-
       const tubeLines = await linesResponse.json();
-
-      console.log("[TubeMap] tubeLines:", tubeLines);
 
       const lineWithStations = await Promise.all(
         tubeLines.map(async (line) => {
           // Fetch both in parallel: StopPoints gives us every station (with
           // lat/lon) but in no particular order, while Route/Sequence gives
-          // us the correct end-to-end order per branch.
+          // us the correct end-to-end order per branch — that ordering is
+          // what lets the lines below connect stations correctly instead of
+          // however the StopPoints list happens to be sorted.
           const [stopPointsResponse, routeSequenceResponse] = await Promise.all([
             fetch(
               `https://api.tfl.gov.uk/Line/${line.id}/StopPoints?app_key=${apiKey}`,
@@ -50,21 +58,6 @@ function TubeMap() {
               `https://api.tfl.gov.uk/Line/${line.id}/Route/Sequence/outbound?app_key=${apiKey}`,
             ),
           ]);
-
-          console.log(
-            "[TubeMap] stopPoints response for",
-            line.id,
-            "status:",
-            stopPointsResponse.status,
-            stopPointsResponse.ok,
-          );
-          console.log(
-            "[TubeMap] route sequence response for",
-            line.id,
-            "status:",
-            routeSequenceResponse.status,
-            routeSequenceResponse.ok,
-          );
 
           if (!stopPointsResponse.ok) {
             throw new Error("Failed to fetch Tube lines");
@@ -76,14 +69,6 @@ function TubeMap() {
           const stations = await stopPointsResponse.json();
           const routeSequence = await routeSequenceResponse.json();
 
-          console.log("[TubeMap] stations for", line.id, ":", stations);
-          console.log(
-            "[TubeMap] orderedLineRoutes for",
-            line.id,
-            ":",
-            routeSequence.orderedLineRoutes,
-          );
-
           return {
             ...line,
             stations,
@@ -91,8 +76,6 @@ function TubeMap() {
           };
         }),
       );
-
-      console.log("[TubeMap] lineWithStations (final data):", lineWithStations);
 
       setLines(lineWithStations);
       setError(null);
@@ -105,246 +88,66 @@ function TubeMap() {
   }
 
   useEffect(() => {
-    console.log("[TubeMap] mounted, kicking off fetch");
     fetchTubeLocations();
   }, []);
 
-  // Roughly how long (in seconds) a train takes to travel between two
-  // adjacent stations. The Arrivals API only gives a countdown to the next
-  // station, not a total segment duration, so this is an assumption used to
-  // turn "45 seconds left" into "70% of the way along this segment" — TfL
-  // doesn't give us anything more precise than this to work with. Tune this
-  // single number if trains look like they're gliding too fast/slow.
-  const ASSUMED_SEGMENT_SECONDS = 90;
+  // Line id -> its proper display name (e.g. "circle" -> "Circle"), for
+  // labelling the coloured stripes in each station's hover tooltip.
+  const lineNameById = new Map();
+  lines.forEach((line) => {
+    lineNameById.set(line.id, line.name);
+  });
 
-  // Live train positions are ESTIMATED, not real GPS — TfL's API doesn't
-  // expose live train coordinates for the Underground at all. This works
-  // out, for every train the Arrivals feed currently knows about, which
-  // station it's heading to and (by looking that station up in the ordered
-  // route data we already fetched) which station it must have just left,
-  // then linearly interpolates a position between those two using the
-  // countdown above. It only updates once every 10 seconds, in a single
-  // combined API call for all 11 lines, to stay well inside the rate limit.
-  useEffect(() => {
-    // Wait until the initial line/station/route fetch above has completed —
-    // we need orderedLineRoutes and station coordinates before this is
-    // useful, both of which live on `lines`.
-    if (lines.length === 0) return undefined;
-
-    const apiKey = import.meta.env.VITE_TFL_API_KEY;
-
-    // naptanId -> {lat, lng} lookup, and line.id -> line object, both built
-    // once per `lines` update rather than refetched every 10-second tick.
-    const stationCoordsById = new Map();
-    const lineById = new Map();
-    lines.forEach((line) => {
-      lineById.set(line.id, line);
-      line.stations.forEach((s) => {
-        if (!stationCoordsById.has(s.naptanId)) {
-          stationCoordsById.set(s.naptanId, { lat: s.lat, lng: s.lon });
-        }
-      });
-    });
-
-    async function fetchTrainPositions() {
-      try {
-        // One combined call for every tube line, instead of 11 separate
-        // ones — /Line/{ids}/Arrivals accepts a comma-separated id list.
-        const lineIdsCsv = lines.map((line) => line.id).join(",");
-        const response = await fetch(
-          `https://api.tfl.gov.uk/Line/${lineIdsCsv}/Arrivals?app_key=${apiKey}`,
-        );
-
-        console.log(
-          "[TubeMap] arrivals response status:",
-          response.status,
-          response.ok,
-        );
-
-        if (!response.ok) {
-          throw new Error("Failed to fetch train arrivals");
-        }
-
-        const predictions = await response.json();
-
-        console.log("[TubeMap] arrivals predictions:", predictions);
-
-        // Key by vehicleId so the same physical train (which can appear
-        // more than once if the feed has predictions for it at several
-        // upcoming stops) only produces one dot — keeping whichever
-        // prediction has the smallest timeToStation, i.e. the most current.
-        const trainsByVehicleId = new Map();
-
-        predictions.forEach((prediction) => {
-          const line = lineById.get(prediction.lineId);
-          if (!line) return;
-
-          const existing = trainsByVehicleId.get(prediction.vehicleId);
-          if (existing && existing.timeToStation <= prediction.timeToStation) {
-            return;
-          }
-
-          // Find which branch of this line's route the destination station
-          // sits on, and its position within that branch's ordered list.
-          let toIndex = -1;
-          let routeIds = null;
-          (line.orderedLineRoutes || []).some((route) => {
-            const ids = route.naptanIds || [];
-            const index = ids.indexOf(prediction.naptanId);
-            if (index !== -1) {
-              toIndex = index;
-              routeIds = ids;
-              return true;
-            }
-            return false;
-          });
-          if (toIndex === -1) return;
-
-          // We only fetched the "outbound" ordering, so an inbound train is
-          // moving through that list backwards — its previous station is
-          // the NEXT entry in our array, not the one before it.
-          const previousIndex =
-            prediction.direction === "inbound" ? toIndex + 1 : toIndex - 1;
-          if (previousIndex < 0 || previousIndex >= routeIds.length) return;
-
-          const fromId = routeIds[previousIndex];
-          const toId = prediction.naptanId;
-          const fromCoords = stationCoordsById.get(fromId);
-          const toCoords = stationCoordsById.get(toId);
-          if (!fromCoords || !toCoords) return;
-
-          const progress = Math.min(
-            1,
-            Math.max(0, 1 - prediction.timeToStation / ASSUMED_SEGMENT_SECONDS),
-          );
-
-          trainsByVehicleId.set(prediction.vehicleId, {
-            id: prediction.vehicleId,
-            lineId: prediction.lineId,
-            timeToStation: prediction.timeToStation,
-            lat: fromCoords.lat + (toCoords.lat - fromCoords.lat) * progress,
-            lng: fromCoords.lng + (toCoords.lng - fromCoords.lng) * progress,
-          });
-        });
-
-        const nextTrains = Array.from(trainsByVehicleId.values());
-        console.log("[TubeMap] computed train positions:", nextTrains);
-        setTrains(nextTrains);
-      } catch (err) {
-        console.error("[TubeMap] fetchTrainPositions failed:", err);
-      }
-    }
-
-    fetchTrainPositions();
-    const intervalId = setInterval(fetchTrainPositions, 10000);
-    return () => clearInterval(intervalId);
-  }, [lines]);
-
-  console.log(
-    "[TubeMap] render — loading:",
-    loading,
-    "error:",
-    error,
-    "lines:",
-    lines,
-  );
-
-  if (loading) {
-    return (
-      <div className="page">
-        <h1>Live Tube Map</h1>
-        <p>Loading Tube Stations ...</p>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="page">
-        <h1>Live Tube Map</h1>
-        <p>Error: {error}</p>
-      </div>
-    );
-  }
-
-  /*
-
-  const stations = [
-    {
-      id: "1",
-      name: "King's Cross",
-      lat: 51.5307,
-      lng: -0.1238,
-      color: "#F3A346",
-    },
-    { id: "2", name: "Euston", lat: 51.5281, lng: -0.1337, color: "#00A4A6" },
-    {
-      id: "3",
-      name: "Warren Street",
-      lat: 51.5249,
-      lng: -0.1383,
-      color: "#00A4A6",
-    },
-    {
-      id: "4",
-      name: "Oxford Circus",
-      lat: 51.5152,
-      lng: -0.1415,
-      color: "#E32017",
-    },
-    {
-      id: "5",
-      name: "Tottenham Court Road",
-      lat: 51.5165,
-      lng: -0.1306,
-      color: "#E32017",
-    },
-  ];
-
-  // Example connections between stations to draw the "tracks"
-  const connections = [
-    { from: "1", to: "2", color: "#007828" },
-    { from: "2", to: "3", color: "#00A4A6" },
-    { from: "3", to: "4", color: "#00A4A6" },
-    { from: "4", to: "5", color: "#E32017" },
-  ];
-  */
-
+  // naptanId -> station, deduped across lines — but every line a station
+  // sits on is recorded in lineIds, not just the first one, so an
+  // interchange station's tooltip can list all of them.
   const stationMap = new Map();
   lines.forEach((line) => {
     line.stations.forEach((s) => {
-      if (!stationMap.has(s.naptanId)) {
-        stationMap.set(s.naptanId, {
-          id: s.naptanId,
-          name: s.commonName,
-          lat: s.lat,
-          lng: s.lon, // the TfL API calls it "lon", not "lng"
-          // Interchange stations (e.g. Oxford Circus) sit on several lines,
-          // but a dot can only show one colour — it just takes whichever
-          // line's stop data we happened to process first.
-          lineId: line.id,
-        });
+      const existing = stationMap.get(s.naptanId);
+      if (existing) {
+        if (!existing.lineIds.includes(line.id)) {
+          existing.lineIds.push(line.id);
+        }
+        return;
       }
+
+      stationMap.set(s.naptanId, {
+        id: s.naptanId,
+        // The TfL API's commonName includes an " Underground Station"
+        // suffix (e.g. "Temple Underground Station") — trimmed here so
+        // the tooltip just reads "Temple".
+        name: s.commonName.replace(/ Underground Station$/, ""),
+        lat: s.lat,
+        lng: s.lon, // the TfL API calls it "lon", not "lng"
+        lineIds: [line.id],
+      });
     });
   });
   const stations = Array.from(stationMap.values());
 
+  // One segment per adjacent pair in each branch's ordered route — this is
+  // what makes the lines connect station-to-station in the order they
+  // actually run, rather than as straight lines between arbitrary stations.
   const connections = [];
   lines.forEach((line) => {
     (line.orderedLineRoutes || []).forEach((route) => {
       const ids = route.naptanIds || [];
       for (let i = 0; i < ids.length - 1; i++) {
-        connections.push({ from: ids[i], to: ids[i + 1], lineId: line.id });
+        connections.push({
+          id: `${line.id}-${ids[i]}-${ids[i + 1]}`,
+          from: ids[i],
+          to: ids[i + 1],
+          lineId: line.id,
+        });
       }
     });
   });
 
-  // Several lines share the exact same physical track for long stretches
-  // (Circle/District/Hammersmith & City especially) — group connections by
-  // the station pair they connect (regardless of direction) so we know how
-  // many distinct lines are drawn on top of each other for that stretch.
-  // Rendering below uses this to nudge each line sideways into its own
-  // parallel strand instead of one colour hiding the others.
+  // Group connections by the station pair they connect, regardless of
+  // direction, so we know how many distinct lines share that exact edge —
+  // e.g. Circle/District/Hammersmith & City run on the same physical track
+  // for long stretches around Paddington and Edgware Road.
   const edgeLineGroups = new Map();
   connections.forEach((conn) => {
     const [a, b] = [conn.from, conn.to].sort();
@@ -358,183 +161,139 @@ function TubeMap() {
     }
   });
 
-  // Gap between parallel strands when lines share a track — keep this
-  // bigger than the strokeWidth set on the <line> below (currently 4),
-  // otherwise thick strands touch/overlap instead of showing a visible
-  // gap. Adjust this single number to tighten or loosen the spacing.
-  const PARALLEL_LINE_SPACING = 6;
+  // For a station pair shared by several lines, nudge each line's segment
+  // sideways (perpendicular to the segment) into its own parallel strand,
+  // evenly spaced either side of the true geographic line — a segment used
+  // by only one line gets no offset at all.
+  function offsetSegment(fromStation, toStation, lineId) {
+    const [a, b] = [fromStation.id, toStation.id].sort();
+    const group = edgeLineGroups.get(`${a}|${b}`) || [lineId];
+    if (group.length <= 1) {
+      return [
+        [fromStation.lat, fromStation.lng],
+        [toStation.lat, toStation.lng],
+      ];
+    }
 
-  // 1. Derive the geographic bounding box FROM the actual station data,
-  // instead of hardcoding it — so it stays correct as the data changes.
-  const lats = stations.map((s) => s.lat);
-  const lngs = stations.map((s) => s.lng);
-  const minLat = Math.min(...lats);
-  const maxLat = Math.max(...lats);
-  const minLng = Math.min(...lngs);
-  const maxLng = Math.max(...lngs);
+    const offsetIndex = group.indexOf(lineId) - (group.length - 1) / 2;
+    const offsetMeters = offsetIndex * SHARED_TRACK_SPACING_METERS;
 
-  // We're no longer drawing on-canvas text labels (with ~270 stations that
-  // would just be an unreadable black smear), so a single uniform padding
-  // is enough — no need for extra label breathing room on the right.
-  const padding = 50;
-  const paddingLeft = padding;
-  const paddingRight = padding;
-  const paddingTop = padding;
-  const paddingBottom = padding;
+    // Measure direction canonically as "a -> b" (flipping sign if this
+    // connection actually runs b -> a), so lines sharing this edge but
+    // recorded in opposite directions by their own route still offset the
+    // same way instead of being pushed onto opposite sides and crossing.
+    const directionSign = fromStation.id === a ? 1 : -1;
+    const refLat = (fromStation.lat + toStation.lat) / 2;
+    const lngCorrection = Math.cos((refLat * Math.PI) / 180);
 
-  // 2. Correct for the fact that a degree of longitude covers less real-world
-  // distance than a degree of latitude, the further you are from the equator.
-  // At this latitude (~51.5°N) a degree of longitude is only ~62% as long as
-  // a degree of latitude, so we scale it down using cos(latitude).
-  const refLat = (minLat + maxLat) / 2;
-  const lngCorrection = Math.cos((refLat * Math.PI) / 180);
+    // Work in a local metres-based approximation (x = east/west, y =
+    // north/south) so the perpendicular is a simple rotation, then convert
+    // the resulting offset back into degrees.
+    const dx =
+      (toStation.lng - fromStation.lng) *
+      lngCorrection *
+      METERS_PER_DEGREE_LAT *
+      directionSign;
+    const dy =
+      (toStation.lat - fromStation.lat) * METERS_PER_DEGREE_LAT * directionSign;
+    const segmentLength = Math.hypot(dx, dy) || 1;
+    const perpX = -dy / segmentLength;
+    const perpY = dx / segmentLength;
 
-  const latSpan = maxLat - minLat;
-  const lngSpanCorrected = (maxLng - minLng) * lngCorrection;
+    const offsetLng =
+      (perpX * offsetMeters) / (METERS_PER_DEGREE_LAT * lngCorrection);
+    const offsetLat = (perpY * offsetMeters) / METERS_PER_DEGREE_LAT;
 
-  // 3. Pick the SVG's content dimensions so their ratio matches the
-  // corrected real-world ratio (whichever axis covers more ground gets the
-  // larger pixel dimension), instead of a fixed, arbitrary 800x600.
-  const REFERENCE_SIZE = 1800; 
-  const realWorldAspect = lngSpanCorrected / latSpan; // width : height
-
-  let contentWidth;
-  let contentHeight;
-
-  if (realWorldAspect >= 1) {
-    contentWidth = REFERENCE_SIZE;
-    contentHeight = REFERENCE_SIZE / realWorldAspect;
-  } else {
-    contentHeight = REFERENCE_SIZE;
-    contentWidth = REFERENCE_SIZE * realWorldAspect;
+    return [
+      [fromStation.lat + offsetLat, fromStation.lng + offsetLng],
+      [toStation.lat + offsetLat, toStation.lng + offsetLng],
+    ];
   }
 
-  const canvasWidth = contentWidth + paddingLeft + paddingRight;
-  const canvasHeight = contentHeight + paddingTop + paddingBottom;
-
-  const project = (lat, lng) => {
-    const x = paddingLeft + ((lng - minLng) / (maxLng - minLng)) * contentWidth;
-    const y = paddingTop + ((maxLat - lat) / latSpan) * contentHeight;
-    return { x, y };
-  };
-
   return (
-    <div className="tube-map-page">
-      <h1 className="tube-title">Live Tube Map</h1>
+    <div className="page tube-map-page">
+      <h1>Live Tube Map</h1>
 
-      <div className="tube-map-wrapper">
-        <svg
-          viewBox={`0 0 ${canvasWidth} ${canvasHeight}`}
-          style={{
-            width: "auto",
-            height: "auto",
-            maxWidth: "100%",
-            maxHeight: "calc(100vh - 190px)",
-            border: "1px solid #ccc",
-            background: "#fff",
-          }}
+      <div className="leaflet-frame">
+        <MapContainer
+          center={LONDON_CENTER}
+          zoom={INITIAL_ZOOM}
+          className="leaflet-container-fixed"
+          scrollWheelZoom
         >
-        {connections.map((conn, index) => {
-          const fromStation = stations.find((s) => s.id === conn.from);
-          const toStation = stations.find((s) => s.id === conn.to);
-          if (!fromStation || !toStation) return null;
+          <TileLayer
+            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+          />
 
-          const p1 = project(fromStation.lat, fromStation.lng);
-          const p2 = project(toStation.lat, toStation.lng);
+          {connections.map((conn) => {
+            const fromStation = stationMap.get(conn.from);
+            const toStation = stationMap.get(conn.to);
+            if (!fromStation || !toStation) return null;
 
-          // Where this line sits within the group of lines sharing this
-          // exact edge — centred on 0, so a single line on its own gets no
-          // offset at all, and a shared edge spreads its lines evenly
-          // either side of the true geographic position.
-          const [a, b] = [conn.from, conn.to].sort();
-          const group = edgeLineGroups.get(`${a}|${b}`) || [conn.lineId];
-          const offsetIndex = group.indexOf(conn.lineId) - (group.length - 1) / 2;
+            return (
+              <Polyline
+                key={conn.id}
+                positions={offsetSegment(fromStation, toStation, conn.lineId)}
+                pathOptions={{ color: getLineColour(conn.lineId), weight: LINE_WEIGHT }}
+              />
+            );
+          })}
 
-          // Measure direction canonically as "a -> b" (flipping sign if this
-          // connection actually runs b -> a), so lines sharing this edge
-          // but recorded in opposite directions by their own route still
-          // offset the same way, instead of being pushed onto opposite
-          // sides and crossing each other.
-          const directionSign = conn.from === a ? 1 : -1;
-          const dx = (p2.x - p1.x) * directionSign;
-          const dy = (p2.y - p1.y) * directionSign;
-          const segmentLength = Math.hypot(dx, dy) || 1;
-          const offsetX = (-dy / segmentLength) * offsetIndex * PARALLEL_LINE_SPACING;
-          const offsetY = (dx / segmentLength) * offsetIndex * PARALLEL_LINE_SPACING;
-
-          return (
-            <line
-              key={`line-${index}`}
-              x1={p1.x + offsetX}
-              y1={p1.y + offsetY}
-              x2={p2.x + offsetX}
-              y2={p2.y + offsetY}
-              stroke={getLineColour(conn.lineId)}
-              strokeWidth="4"
-              strokeLinecap="round"
-            />
-          );
-        })}
-
-        {stations.map((station) => {
-          const { x, y } = project(station.lat, station.lng);
-
-          return (
-            <circle
+          {stations.map((station) => (
+            <CircleMarker
               key={station.id}
-              cx={x}
-              cy={y}
-              r="5"
-              fill={getLineColour(station.lineId)}
+              center={[station.lat, station.lng]}
+              radius={4}
+              pathOptions={{
+                color: getLineColour(station.lineIds[0]),
+                fillColor: "#ffffff",
+                fillOpacity: 1,
+                weight: 2,
+              }}
             >
-              <title>{station.name}</title>
-            </circle>
-          );
-        })}
+              <Tooltip className="station-tooltip" direction="top" offset={[0, -6]}>
+                <div className="station-tooltip-name">{station.name}</div>
+                {station.lineIds.map((lineId) => (
+                  <div
+                    key={lineId}
+                    className="station-tooltip-line"
+                    style={{ background: getLineColour(lineId) }}
+                  >
+                    {lineNameById.get(lineId) || lineId}
+                  </div>
+                ))}
+              </Tooltip>
+            </CircleMarker>
+          ))}
+        </MapContainer>
 
-        {/* Trains — plain white with a black outline so they're visible
-            against the white SVG background (a pure white fill alone would
-            be invisible), drawn last so they sit on top of everything. */}
-        {trains.map((train) => {
-          const { x, y } = project(train.lat, train.lng);
-
-          return (
-            <circle
-              key={train.id}
-              cx={x}
-              cy={y}
-              r="4"
-              fill="white"
-              stroke="black"
-              strokeWidth="1"
-            />
-          );
-        })}
-        </svg>
+        {loading && (
+          <div className="map-status">Loading Tube stations…</div>
+        )}
+        {error && <div className="map-status map-status-error">Error: {error}</div>}
       </div>
 
-      {/* 
-
-      Prints all Lines, all stations and their long + lat 
-
-      {lines.map((line) => (
-        <section key={line.id}>
-          <h2>{line.name}</h2>
-
-          <ul>
-            {line.stations.map((stations) => (
-              <li key={stations.id}>
-                <strong>{stations.commonName}</strong>
-                <br />
-                Latitude: {stations.lat}
-                <br />
-                Longitude: {stations.lon}
-              </li>
-            ))}
-          </ul>
-        </section>
-      ))}
-        */}
+      <div className="map-description">
+        <h2>What this map does</h2>
+        <p>
+          This is a real, interactive slippy map (powered by Leaflet and
+          OpenStreetMap) rather than a fixed image — drag to pan around
+          London and use your scroll wheel, the +/&minus; buttons, or a pinch
+          gesture to zoom in and out. On top of it sits the live Underground
+          network from TfL's API: every station is plotted at its real
+          coordinates, and each line is drawn by connecting its stations in
+          the order trains actually travel between them, branch by branch.
+          Each line is drawn in its real TfL brand colour (Central red,
+          Piccadilly blue, Circle yellow, and so on). Where two or more
+          lines share the exact same track — the Circle, District and
+          Hammersmith &amp; City around Paddington, for example — each one
+          is drawn as its own parallel strand rather than one colour
+          hiding the rest, so a shared stretch reads as roughly double the
+          width of a normal line. Interchange stations are outlined in
+          whichever of their lines' data happened to be processed first.
+        </p>
+      </div>
     </div>
   );
 }
