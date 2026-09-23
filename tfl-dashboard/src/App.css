@@ -316,6 +316,35 @@ footer {
   font-size: 24px;
 }
 
+/* Scoped to the TubeMap page only — a wider, tighter container than
+   .page, so this route isn't stuck at .page's 1400px cap. Every other
+   route still uses .page and is untouched by this. */
+.tube-map-page {
+  max-width: 1900px;
+  margin: 0 auto;
+  padding: 24px 32px;
+}
+
+.tube-map-wrapper {
+  display: flex;
+  justify-content: center;
+  margin-top: 12px;
+}
+
+.tube-title {
+  text-align: center;
+  font-family: Arial, sans-serif;
+  font-size: 2.5rem;
+  font-weight: 700;
+  color: #2f82ff;
+  margin: 30px 0;
+  letter-spacing: 1px;
+  border-bottom: 4px solid #d50000;
+  width: fit-content;
+  margin-left: auto;
+  margin-right: auto;
+}
+
 /* HOME */
 
 .home-page {
@@ -888,4 +917,111 @@ footer {
   .hero-buttons {
     flex-direction: column;
   }
+}
+
+/* =========================
+   TubeMap — Leaflet base map
+   ========================= */
+
+.leaflet-frame {
+  position: relative;
+  margin-top: 20px;
+  padding: 10px;
+
+  width: 100%;
+  height: 600px;
+
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  box-shadow:
+    0 2px 6px rgba(15, 23, 42, 0.04),
+    0 8px 20px rgba(15, 23, 42, 0.04);
+
+  display: flex;
+  justify-content: center;
+}
+
+.map-status {
+  position: absolute;
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+
+  padding: 8px 16px;
+
+  background: rgba(17, 24, 39, 0.85);
+  color: #ffffff;
+  border-radius: 999px;
+
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.map-status-error {
+  background: rgba(185, 28, 28, 0.9);
+}
+
+.leaflet-container-fixed {
+  width: 100%;
+  height: 100%;
+  border-radius: 10px;
+}
+
+.map-description {
+  margin-top: 24px;
+  padding: 20px 24px;
+
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  box-shadow:
+    0 2px 6px rgba(15, 23, 42, 0.04),
+    0 8px 20px rgba(15, 23, 42, 0.04);
+}
+
+.map-description h2 {
+  margin: 0 0 10px;
+  color: #111827;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.map-description p {
+  margin: 0;
+  color: #475569;
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+/* =========================
+   TubeMap — station tooltip
+   ========================= */
+
+.station-tooltip.leaflet-tooltip {
+  padding: 0;
+  overflow: hidden;
+  min-width: 120px;
+
+  border: none;
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.35);
+}
+
+.station-tooltip-name {
+  padding: 6px 10px;
+
+  background: #ffffff;
+  color: #111827;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.station-tooltip-line {
+  padding: 4px 10px;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.35);
 }
