@@ -14,6 +14,7 @@ function Navbar() {
           <NavLink to="/map">Live Map</NavLink>
           <NavLink to="/status">Line Status</NavLink>
           <NavLink to="/stations">Stations</NavLink>
+          <NavLink to="/plan">Plan a Trip</NavLink>
           <NavLink to="/about">About</NavLink>
         </div>
 
