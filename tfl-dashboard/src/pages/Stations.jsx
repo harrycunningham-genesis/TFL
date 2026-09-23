@@ -78,6 +78,10 @@ function groupArrivals(predictions) {
 async function resolveStopId(id) {
   // Interchange stations (e.g. Farringdon) resolve to a hub id with no
   // arrivals of its own — look up its Tube-specific child stop instead.
+  // Some stations (e.g. Amersham) have no child tagged "tube" at all because
+  // the Underground platforms are grouped under National Rail in TfL's data —
+  // fall back to any child rather than leaving the unresolved hub id, which
+  // the API rejects as ambiguous.
   if (!id.startsWith("HUB")) return id;
 
   const response = await fetch(
@@ -86,7 +90,7 @@ async function resolveStopId(id) {
   const data = await response.json();
   const tubeChild = data.children?.find((child) => child.modes?.includes("tube"));
 
-  return tubeChild ? tubeChild.id : id;
+  return tubeChild ? tubeChild.id : data.children?.[0]?.id || id;
 }
 
 async function selectStation(match) {
@@ -158,6 +162,10 @@ const board = groupArrivals(arrivals);
 
           {loading && <p>Loading arrivals...</p>}
           {error && <p className="error">{error}</p>}
+
+          {!loading && !error && arrivals.length === 0 && (
+            <p>No live arrivals available for this station right now.</p>
+          )}
 
           {Object.entries(board).map(([platform, predictions]) => (
             <div className="platform-group" key={platform}>
