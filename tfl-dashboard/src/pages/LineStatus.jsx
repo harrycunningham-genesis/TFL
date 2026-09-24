@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 
 import { getLineColor } from "../utils/lineColors";
+import { getStatusClass } from "../utils/lineStatus";
 
 const MODE_ORDER = ["tube", "overground", "dlr", "elizabeth-line", "tram", "national-rail"];
 const MODE_LABELS = {
@@ -103,11 +104,7 @@ function LineStatus() {
                       </h3>
 
                       <span
-                        className={`status ${
-                          status?.statusSeverityDescription === "Good Service"
-                            ? "good"
-                            : "warning"
-                        }`}
+                        className={`status ${getStatusClass(status?.statusSeverityDescription)}`}
                       >
                         {status?.statusSeverityDescription || "Unknown"}
                       </span>

@@ -183,9 +183,20 @@ button:active {
   color: #166534;
 }
 
-.warning {
+.minor {
   background: #fef3c7;
   color: #92400e;
+}
+
+.severe {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.other,
+.unknown {
+  background: #ede9fe;
+  color: #5b21b6;
 }
 
 /* =========================

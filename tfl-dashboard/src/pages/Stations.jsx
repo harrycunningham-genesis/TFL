@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 
 import { getRecentStations, addRecentStation } from "../utils/recentStations";
 import { getLineColor } from "../utils/lineColors";
+import { getStatusClass } from "../utils/lineStatus";
 
 const API_KEY = import.meta.env.VITE_TFL_API_KEY;
 const RECENTS_KEY = "tfl_recent_stations";
@@ -467,12 +468,9 @@ const board = groupArrivals(filteredArrivals);
                     </h3>
 
                     <span
-                      className={`status ${
-                        lineStatus.lineStatuses?.[0]?.statusSeverityDescription ===
-                        "Good Service"
-                          ? "good"
-                          : "warning"
-                      }`}
+                      className={`status ${getStatusClass(
+                        lineStatus.lineStatuses?.[0]?.statusSeverityDescription,
+                      )}`}
                     >
                       {lineStatus.lineStatuses?.[0]?.statusSeverityDescription || "Unknown"}
                     </span>
