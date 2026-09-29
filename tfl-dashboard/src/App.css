@@ -1354,3 +1354,165 @@ footer {
 .view-on-map-link:hover {
   opacity: 0.85;
 }
+
+/* =========================
+   Line Status — local uptime history (IndexedDB)
+   ========================= */
+
+.uptime-summary {
+  margin: 8px 0 0;
+
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.uptime-summary-empty {
+  color: #94a3b8;
+  font-style: italic;
+  font-weight: 500;
+}
+
+/* =========================
+   Trip Planner — favourite trips
+   ========================= */
+
+.trip-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.favourite-toggle-button {
+  padding: 10px 16px;
+
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+
+  color: #475569;
+  font-size: 14px;
+  font-weight: 600;
+
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.favourite-toggle-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.favourite-toggle-button:not(:disabled):hover {
+  border-color: #94a3b8;
+}
+
+.favourite-toggle-button-active {
+  background: #fffbeb;
+  border-color: #fbbf24;
+  color: #b45309;
+}
+
+.favourite-trips {
+  margin: 16px 0;
+}
+
+.favourite-trips-label {
+  display: block;
+  margin-bottom: 8px;
+
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.favourite-trip-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.favourite-trip-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
+
+  color: #334155;
+  font-size: 13px;
+  font-weight: 600;
+
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.favourite-trip-chip:hover {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+}
+
+.favourite-trip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+
+  color: #94a3b8;
+  font-size: 14px;
+  line-height: 1;
+
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.favourite-trip-remove:hover {
+  background: #e2e8f0;
+  color: #475569;
+}
+
+/* =========================
+   Line Status — favourite lines
+   ========================= */
+
+.line-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.favourite-star {
+  padding: 0;
+
+  background: none;
+  border: none;
+
+  color: #cbd5e1;
+  font-size: 18px;
+  line-height: 1;
+
+  cursor: pointer;
+  transition: color 0.15s ease, transform 0.1s ease;
+}
+
+.favourite-star:hover {
+  color: #fbbf24;
+  transform: scale(1.1);
+}
+
+.favourite-star-active {
+  color: #f59e0b;
+}
+
+.favourites-section .mode-section-title {
+  color: #b45309;
+}

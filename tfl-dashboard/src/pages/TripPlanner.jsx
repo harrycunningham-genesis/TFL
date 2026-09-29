@@ -1,6 +1,12 @@
 import { useState } from "react";
 
 import { getRecentStations, addRecentStation } from "../utils/recentStations";
+import {
+  getFavouriteTrips,
+  isFavouriteTrip,
+  toggleFavouriteTrip,
+  removeFavouriteTrip,
+} from "../utils/favourites";
 import { getLineColor } from "../utils/lineColors";
 
 const API_KEY = import.meta.env.VITE_TFL_API_KEY;
@@ -95,6 +101,9 @@ function TripPlanner() {
   const [error, setError] = useState(null);
   const [searched, setSearched] = useState(false);
 
+  const [favouriteTrips, setFavouriteTrips] = useState(() => getFavouriteTrips());
+  const currentTripIsFavourited = isFavouriteTrip(fromStation, toStation);
+
   async function resolveStopId(id) {
     // Interchange stations (e.g. King's Cross) resolve to a hub id that the
     // Journey Planner can't route from directly — look up a rail-specific
@@ -134,10 +143,10 @@ function TripPlanner() {
     setSuggestions(data.matches || []);
   }
 
-  async function planJourney() {
-    if (!fromStation || !toStation) return;
+  async function planJourneyFor(fromSt, toSt) {
+    if (!fromSt || !toSt) return;
 
-    if (fromStation.id === toStation.id) {
+    if (fromSt.id === toSt.id) {
       setJourneys([]);
       setError("Please choose two different stations.");
       setSearched(true);
@@ -148,8 +157,8 @@ function TripPlanner() {
       setLoading(true);
       setError(null);
 
-      const fromId = await resolveStopId(fromStation.id);
-      const toId = await resolveStopId(toStation.id);
+      const fromId = await resolveStopId(fromSt.id);
+      const toId = await resolveStopId(toSt.id);
 
       const response = await fetch(
         `https://api.tfl.gov.uk/Journey/JourneyResults/${fromId}/to/${toId}?app_key=${API_KEY}`,
@@ -172,6 +181,32 @@ function TripPlanner() {
       setLoading(false);
       setSearched(true);
     }
+  }
+
+  async function planJourney() {
+    await planJourneyFor(fromStation, toStation);
+  }
+
+  function handleToggleFavouriteTrip() {
+    if (!fromStation || !toStation) return;
+    setFavouriteTrips(toggleFavouriteTrip(fromStation, toStation));
+  }
+
+  function selectFavouriteTrip(trip) {
+    setFromQuery(trip.from.name);
+    setFromStation(trip.from);
+    setFromSuggestions([]);
+
+    setToQuery(trip.to.name);
+    setToStation(trip.to);
+    setToSuggestions([]);
+
+    planJourneyFor(trip.from, trip.to);
+  }
+
+  function handleRemoveFavouriteTrip(trip, event) {
+    event.stopPropagation();
+    setFavouriteTrips(removeFavouriteTrip(trip.from, trip.to));
   }
 
   function formatTime(dateTime) {
@@ -221,13 +256,60 @@ function TripPlanner() {
         />
       </div>
 
-      <button
-        className="plan-button"
-        onClick={planJourney}
-        disabled={!fromStation || !toStation || loading}
-      >
-        {loading ? "Planning..." : "Plan Journey"}
-      </button>
+      <div className="trip-actions">
+        <button
+          className="plan-button"
+          onClick={planJourney}
+          disabled={!fromStation || !toStation || loading}
+        >
+          {loading ? "Planning..." : "Plan Journey"}
+        </button>
+
+        <button
+          type="button"
+          className={`favourite-toggle-button ${currentTripIsFavourited ? "favourite-toggle-button-active" : ""}`}
+          onClick={handleToggleFavouriteTrip}
+          disabled={!fromStation || !toStation}
+          aria-label={
+            currentTripIsFavourited ? "Remove this trip from favourites" : "Save this trip as a favourite"
+          }
+          title={currentTripIsFavourited ? "Remove from favourites" : "Save as favourite"}
+        >
+          {currentTripIsFavourited ? "★ Favourited" : "☆ Favourite"}
+        </button>
+      </div>
+
+      {favouriteTrips.length > 0 && (
+        <div className="favourite-trips">
+          <span className="favourite-trips-label">Favourite trips</span>
+          <div className="favourite-trip-chips">
+            {favouriteTrips.map((trip) => (
+              <button
+                type="button"
+                key={trip.id}
+                className="favourite-trip-chip"
+                onClick={() => selectFavouriteTrip(trip)}
+              >
+                {trip.from.name} → {trip.to.name}
+                <span
+                  className="favourite-trip-remove"
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`Remove ${trip.from.name} to ${trip.to.name} from favourites`}
+                  onClick={(event) => handleRemoveFavouriteTrip(trip, event)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      handleRemoveFavouriteTrip(trip, event);
+                    }
+                  }}
+                >
+                  ×
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {error && <p className="error">{error}</p>}
 
