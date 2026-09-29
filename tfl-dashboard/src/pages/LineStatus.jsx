@@ -8,6 +8,7 @@ import {
   pruneOldSnapshots,
 } from "../db/statusHistory";
 import { getFavouriteLineIds, toggleFavouriteLine } from "../utils/favourites";
+import { TIER_META, getTier } from "../utils/severity";
 
 // How far back the "X% good service" figure under each line looks — long
 // enough to smooth over a single bad day, short enough to still feel
@@ -39,57 +40,6 @@ const MODE_LABELS = {
 // listed here even though it isn't part of the tube/overground/etc modes
 // above. Add more national-rail line ids here if useful later.
 const NATIONAL_RAIL_LINES = ["thameslink"];
-
-// TfL's severityLevel is a shared 0-20 enum across every mode (see
-// GET /Line/Meta/Severity) — but the NUMBER itself isn't a severity
-// ranking: 10 is "Good Service", the normal healthy state, sitting right
-// in the middle of the scale. So sorting or colour-coding by that raw
-// number would be meaningless (a "Part Closure" at 5 isn't worse than
-// "Severe Delays" at 6 just because 5 < 6). This is our own judgement call
-// on how bad each of TfL's real-world status descriptions actually is for
-// a passenger, grouped into four tiers used for both sorting and colour.
-const SEVERITY_TIER_BY_DESCRIPTION = {
-  Closed: "severe",
-  "Service Closed": "severe",
-  Suspended: "severe",
-  "Not Running": "severe",
-  "Part Suspended": "severe",
-  "Severe Delays": "severe",
-
-  "Part Closure": "moderate",
-  "Part Closed": "moderate",
-  "Reduced Service": "moderate",
-  "Bus Service": "moderate",
-  "Planned Closure": "moderate",
-  Diverted: "moderate",
-  "Issues Reported": "moderate",
-
-  "Minor Delays": "minor",
-  "Change of frequency": "minor",
-  "Exit Only": "minor",
-  "No Step Free Access": "minor",
-
-  "Good Service": "good",
-  "Special Service": "good",
-  "No Issues": "good",
-  Information: "good",
-};
-
-// Sort order (lower = shown first = worse) and display metadata per tier.
-// "unknown" covers a missing/unrecognised status rather than silently
-// treating it as fine.
-const TIER_META = {
-  severe: { rank: 0, label: "Severe disruption", className: "severe" },
-  moderate: { rank: 1, label: "Disrupted", className: "moderate" },
-  minor: { rank: 2, label: "Minor issue", className: "minor" },
-  good: { rank: 3, label: "Good service", className: "good" },
-  unknown: { rank: 4, label: "Unknown", className: "unknown" },
-};
-
-function getTier(line) {
-  const description = line.lineStatuses?.[0]?.statusSeverityDescription;
-  return SEVERITY_TIER_BY_DESCRIPTION[description] || "unknown";
-}
 
 // Only worth showing a "closed until…" window for disruptions TfL already
 // knows the schedule for (planned engineering work, etc.) — for a live,

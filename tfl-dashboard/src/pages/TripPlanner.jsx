@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 
 import { getRecentStations, addRecentStation } from "../utils/recentStations";
 import {
@@ -104,6 +105,14 @@ function TripPlanner() {
   const [favouriteTrips, setFavouriteTrips] = useState(() => getFavouriteTrips());
   const currentTripIsFavourited = isFavouriteTrip(fromStation, toStation);
 
+  // "?from={id}&to={id}" — arrives from a favourite-trip card on the Home
+  // page. Matched against the saved favourites list (rather than an
+  // arbitrary station lookup) since that's the only thing that ever links
+  // here this way, and it means no extra StopPoint fetch is needed — the
+  // favourite already carries the station's name alongside its id.
+  const [searchParams] = useSearchParams();
+  const deepLinkAppliedRef = useRef(false);
+
   async function resolveStopId(id) {
     // Interchange stations (e.g. King's Cross) resolve to a hub id that the
     // Journey Planner can't route from directly — look up a rail-specific
@@ -208,6 +217,26 @@ function TripPlanner() {
     event.stopPropagation();
     setFavouriteTrips(removeFavouriteTrip(trip.from, trip.to));
   }
+
+  // Applies the "?from=&to=" deep link at most once, and only once its
+  // match has actually been found in favouriteTrips (which loads
+  // synchronously from localStorage on mount, so in practice this runs
+  // on the very first render where searchParams has both ids).
+  useEffect(() => {
+    if (deepLinkAppliedRef.current) return;
+
+    const fromId = searchParams.get("from");
+    const toId = searchParams.get("to");
+    if (!fromId || !toId) return;
+
+    const match = favouriteTrips.find(
+      (trip) => trip.from.id === fromId && trip.to.id === toId,
+    );
+    if (!match) return;
+
+    deepLinkAppliedRef.current = true;
+    selectFavouriteTrip(match);
+  }, [searchParams, favouriteTrips]);
 
   function formatTime(dateTime) {
     return new Date(dateTime).toLocaleTimeString([], {
