@@ -59,6 +59,12 @@ const TUBE_NETWORK_MODES = ["tube", "elizabeth-line", "dlr"];
 // grouped under this one mode.
 const OVERGROUND_NETWORK_MODES = ["overground"];
 
+// Thameslink is a National Rail operator, not TfL's own network — TfL's
+// "national-rail" mode covers 25 operators (Southeastern, Great Northern,
+// etc.), and this map only wants this one, so it's fetched by line id
+// directly rather than via Line/Mode like the two networks above.
+const THAMESLINK_LINE_ID = "thameslink";
+
 function hexToHsl(hex) {
   const r = parseInt(hex.slice(1, 3), 16) / 255;
   const g = parseInt(hex.slice(3, 5), 16) / 255;
@@ -151,6 +157,11 @@ function TubeMap() {
   // toggling the checkbox off and back on doesn't refetch it every time.
   const overgroundRequestedRef = useRef(false);
 
+  const [thameslinkLines, setThameslinkLines] = useState([]);
+  const [thameslinkLoading, setThameslinkLoading] = useState(false);
+  const [thameslinkError, setThameslinkError] = useState(null);
+  const thameslinkRequestedRef = useRef(false);
+
   // Line ids currently highlighted — set by clicking a line (just that one
   // line) or a station (every line that stops there). Empty means nothing
   // is selected and the map is shown normally.
@@ -163,6 +174,7 @@ function TubeMap() {
   const [networkMode, setNetworkMode] = useState("tube");
   const showTubes = networkMode === "tube";
   const showOverground = networkMode === "overground";
+  const showThameslink = networkMode === "thameslink";
 
   // The combined set of lines actually drawn right now — whichever
   // networks are both checked on above AND have finished loading. Recomputed
@@ -173,8 +185,9 @@ function TubeMap() {
     () => [
       ...(showTubes ? tubeLines : []),
       ...(showOverground ? overgroundLines : []),
+      ...(showThameslink ? thameslinkLines : []),
     ],
-    [showTubes, showOverground, tubeLines, overgroundLines],
+    [showTubes, showOverground, showThameslink, tubeLines, overgroundLines, thameslinkLines],
   );
 
   // One {id, initialLatLng} snapshot per currently-visible train — React
@@ -223,11 +236,39 @@ function TubeMap() {
     }
   }
 
-  // Shared by both networks: given a list of TfL modes, fetches every line
-  // in them plus, per line, every station (StopPoints) and the correct
-  // end-to-end station order per branch (Route/Sequence) — that ordering is
-  // what lets connections below join stations in the order trains actually
-  // run, rather than however StopPoints happens to be sorted.
+  // Given a line's own metadata, fetches its stations (StopPoints) and the
+  // correct end-to-end station order per branch (Route/Sequence) — that
+  // ordering is what lets connections below join stations in the order
+  // trains actually run, rather than however StopPoints happens to be
+  // sorted. Shared by every network this map draws.
+  async function fetchLineDetail(line, apiKey) {
+    const [stopPointsResponse, routeSequenceResponse] = await Promise.all([
+      fetch(`https://api.tfl.gov.uk/Line/${line.id}/StopPoints?app_key=${apiKey}`),
+      fetch(
+        `https://api.tfl.gov.uk/Line/${line.id}/Route/Sequence/outbound?app_key=${apiKey}`,
+      ),
+    ]);
+
+    if (!stopPointsResponse.ok) {
+      throw new Error(`Failed to fetch stop points for ${line.id}`);
+    }
+    if (!routeSequenceResponse.ok) {
+      throw new Error(`Failed to fetch route sequence for ${line.id}`);
+    }
+
+    const stations = await stopPointsResponse.json();
+    const routeSequence = await routeSequenceResponse.json();
+
+    return {
+      ...line,
+      stations,
+      orderedLineRoutes: routeSequence.orderedLineRoutes,
+    };
+  }
+
+  // Given a list of TfL modes, fetches every line in them, then each one's
+  // detail. Used for the Tube and Overground networks, which are each one
+  // mode covering several lines.
   async function fetchLinesForModes(modes) {
     const apiKey = import.meta.env.VITE_TFL_API_KEY;
 
@@ -239,36 +280,24 @@ function TubeMap() {
     }
     const networkLines = await linesResponse.json();
 
-    return Promise.all(
-      networkLines.map(async (line) => {
-        const [stopPointsResponse, routeSequenceResponse] = await Promise.all(
-          [
-            fetch(
-              `https://api.tfl.gov.uk/Line/${line.id}/StopPoints?app_key=${apiKey}`,
-            ),
-            fetch(
-              `https://api.tfl.gov.uk/Line/${line.id}/Route/Sequence/outbound?app_key=${apiKey}`,
-            ),
-          ],
-        );
+    return Promise.all(networkLines.map((line) => fetchLineDetail(line, apiKey)));
+  }
 
-        if (!stopPointsResponse.ok) {
-          throw new Error(`Failed to fetch stop points for ${line.id}`);
-        }
-        if (!routeSequenceResponse.ok) {
-          throw new Error(`Failed to fetch route sequence for ${line.id}`);
-        }
+  // Given specific line ids, fetches each one's own metadata plus detail —
+  // used for Thameslink, since its "national-rail" mode covers 25 other
+  // operators this map has no interest in drawing.
+  async function fetchLinesByIds(lineIds) {
+    const apiKey = import.meta.env.VITE_TFL_API_KEY;
 
-        const stations = await stopPointsResponse.json();
-        const routeSequence = await routeSequenceResponse.json();
-
-        return {
-          ...line,
-          stations,
-          orderedLineRoutes: routeSequence.orderedLineRoutes,
-        };
-      }),
+    const linesResponse = await fetch(
+      `https://api.tfl.gov.uk/Line/${lineIds.join(",")}?app_key=${apiKey}`,
     );
+    if (!linesResponse.ok) {
+      throw new Error(`Failed to fetch lines for ${lineIds.join(", ")}`);
+    }
+    const namedLines = await linesResponse.json();
+
+    return Promise.all(namedLines.map((line) => fetchLineDetail(line, apiKey)));
   }
 
   async function fetchTubeLocations() {
@@ -297,6 +326,19 @@ function TubeMap() {
     }
   }
 
+  async function fetchThameslinkLocations() {
+    try {
+      setThameslinkLoading(true);
+      setThameslinkLines(await fetchLinesByIds([THAMESLINK_LINE_ID]));
+      setThameslinkError(null);
+    } catch (err) {
+      console.error("[TubeMap] fetchThameslinkLocations failed:", err);
+      setThameslinkError(err.message);
+    } finally {
+      setThameslinkLoading(false);
+    }
+  }
+
   useEffect(() => {
     fetchTubeLocations();
   }, []);
@@ -309,6 +351,13 @@ function TubeMap() {
     overgroundRequestedRef.current = true;
     fetchOvergroundLocations();
   }, [showOverground]);
+
+  // Same lazy-load pattern as Overground above.
+  useEffect(() => {
+    if (!showThameslink || thameslinkRequestedRef.current) return;
+    thameslinkRequestedRef.current = true;
+    fetchThameslinkLocations();
+  }, [showThameslink]);
 
   // Runs continuously (independent of how often fresh data arrives) and,
   // every frame, moves each train marker directly via Leaflet's own
@@ -507,11 +556,12 @@ function TubeMap() {
       stationMap.set(s.naptanId, {
         id: s.naptanId,
         // The TfL API's commonName includes a mode suffix — " Underground
-        // Station" for the tube, " DLR Station" for the DLR (e.g. "Temple
-        // Underground Station", "Bank DLR Station") — trimmed here so the
-        // tooltip just reads "Temple" or "Bank". Elizabeth line and
+        // Station" for the tube, " DLR Station" for the DLR, " Rail Station"
+        // for Thameslink (e.g. "Temple Underground Station", "Bank DLR
+        // Station", "Radlett Rail Station") — trimmed here so the tooltip
+        // just reads "Temple", "Bank" or "Radlett". Elizabeth line and
         // Overground stops don't carry one to strip.
-        name: s.commonName.replace(/ (Underground|DLR) Station$/, ""),
+        name: s.commonName.replace(/ (Underground|DLR|Rail) Station$/, ""),
         lat: s.lat,
         lng: s.lon, // the TfL API calls it "lon", not "lng"
         lineIds: [line.id],
@@ -604,19 +654,21 @@ function TubeMap() {
     ];
   }
 
-  // Combine both networks' loading/error state into one status pill each,
-  // rather than two that could overlap — only mentioning a network if its
-  // checkbox is actually on, so switching Overground off also silences any
+  // Combine all networks' loading/error state into one status pill each,
+  // rather than several that could overlap — only mentioning a network if
+  // its checkbox is actually on, so switching one off also silences any
   // error it hit.
   const statusLabel = [
     showTubes && tubeLoading && "Tube network",
     showOverground && overgroundLoading && "Overground",
+    showThameslink && thameslinkLoading && "Thameslink",
   ]
     .filter(Boolean)
     .join(" & ");
   const errorLabel = [
     showTubes && tubeError && `Tube network: ${tubeError}`,
     showOverground && overgroundError && `Overground: ${overgroundError}`,
+    showThameslink && thameslinkError && `Thameslink: ${thameslinkError}`,
   ]
     .filter(Boolean)
     .join(" | ");
@@ -645,7 +697,25 @@ function TubeMap() {
           />
           Overground
         </label>
+
+        <label className="mode-toggle">
+          <input
+            type="radio"
+            name="network-mode"
+            checked={networkMode === "thameslink"}
+            onChange={() => setNetworkMode("thameslink")}
+          />
+          Thameslink
+        </label>
       </div>
+
+      {showThameslink && (
+        <p className="thameslink-note">
+          Thameslink runs far beyond London (Bedford to Brighton) — zoom out to see the
+          whole network. TfL has no live train-position data for it, so unlike the Tube and
+          Overground, no moving trains are shown on this line.
+        </p>
+      )}
 
       <div className="leaflet-frame">
         <MapContainer
@@ -775,7 +845,10 @@ function TubeMap() {
           Elizabeth line and the DLR) is selected by default; Overground
           (its six lines — Liberty, Lioness, Mildmay, Suffragette, Weaver
           and Windrush — each in their own real TfL colour) can be
-          selected instead. On top of the map sits the live network from
+          selected instead, as can Thameslink — a National Rail line, not
+          run by TfL, so it has no live train positions here, but its real
+          route and all 161 stations (Bedford to Brighton) are drawn the
+          same way. On top of the map sits the live network from
           TfL's API: every station is plotted at its real coordinates,
           and each line is drawn by connecting its stations in the order
           trains actually travel between them, branch

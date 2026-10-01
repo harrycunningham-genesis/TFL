@@ -6,8 +6,15 @@ import { getStatusClass } from "../utils/lineStatus";
 
 const API_KEY = import.meta.env.VITE_TFL_API_KEY;
 const RECENTS_KEY = "tfl_recent_stations";
+// Modes with live arrivals via TfL's Arrivals API — used to resolve which
+// child stop of an interchange hub to actually fetch arrivals from.
 const RAIL_MODES = ["tube", "overground", "dlr", "elizabeth-line", "tram"];
-const RAIL_MODES_PARAM = RAIL_MODES.join(",");
+
+// Search additionally includes "national-rail" so National-Rail-only
+// stations (e.g. Thameslink stops like Radlett, with no Tube/Overground/etc
+// service) are findable too — even though they'll have no live arrivals,
+// falling back to that line's service status instead (see below).
+const SEARCH_MODES_PARAM = [...RAIL_MODES, "national-rail"].join(",");
 
 function Stations() {
   const [query, setQuery] = useState("");
@@ -20,7 +27,7 @@ function Stations() {
   const [focused, setFocused] = useState(false);
   const [filter, setFilter] = useState("all");
   const [lineFilter, setLineFilter] = useState(null);
-  const [lineStatus, setLineStatus] = useState(null);
+  const [lineStatuses, setLineStatuses] = useState({});
   const [lineStatusLoading, setLineStatusLoading] = useState(false);
 
 
@@ -32,7 +39,7 @@ function Stations() {
 
     const timeout = setTimeout(async () => {
       const response = await fetch(
-        `https://api.tfl.gov.uk/StopPoint/Search/${encodeURIComponent(query)}?modes=${RAIL_MODES_PARAM}&app_key=${API_KEY}`,
+        `https://api.tfl.gov.uk/StopPoint/Search/${encodeURIComponent(query)}?modes=${SEARCH_MODES_PARAM}&app_key=${API_KEY}`,
       );
       const data = await response.json();
       setSuggestions(data.matches || []);
@@ -218,34 +225,52 @@ const arrivalLineNames = new Set(arrivals.map((p) => p.lineName));
 
 // Some lines a station serves (e.g. Thameslink) have no real-time
 // predictions in TfL's Arrivals feed at all — they're run by a separate
-// National Rail operator. When that's the selected filter, fall back to
-// that line's current service status instead of a dead "no departures"
-// message.
-const showLineStatusFallback =
-  lineFilter && arrivals.length > 0 && !arrivalLineNames.has(lineFilter);
+// National Rail operator. Fall back to that line's current service status
+// instead of a dead "no departures" message: either for just the selected
+// line filter, or — for a station with no live feed at all, like a
+// Thameslink-only stop such as Radlett — for every line it serves.
+const fallbackLineNames = !loading && !error
+  ? lineFilter
+    ? arrivals.length > 0 && !arrivalLineNames.has(lineFilter)
+      ? [lineFilter]
+      : []
+    : arrivals.length === 0 && station?.lines?.length > 0
+      ? station.lines.map((l) => l.name)
+      : []
+  : [];
+
+const showLineStatusFallback = fallbackLineNames.length > 0;
+const fallbackKey = fallbackLineNames.join(",");
 
 useEffect(() => {
   if (!showLineStatusFallback) {
-    setLineStatus(null);
+    setLineStatuses({});
     return;
   }
 
-  const lineId = station.lines?.find((l) => l.name === lineFilter)?.id;
+  const linesToFetch = fallbackLineNames
+    .map((name) => ({ name, id: station.lines?.find((l) => l.name === name)?.id }))
+    .filter((l) => l.id);
 
-  if (!lineId) {
-    setLineStatus(null);
+  if (linesToFetch.length === 0) {
+    setLineStatuses({});
     return;
   }
 
   setLineStatusLoading(true);
 
-  fetch(`https://api.tfl.gov.uk/Line/${lineId}/Status?app_key=${API_KEY}`)
-    .then((response) => response.json())
-    .then((data) => setLineStatus(data[0] || null))
-    .catch(() => setLineStatus(null))
+  Promise.all(
+    linesToFetch.map((l) =>
+      fetch(`https://api.tfl.gov.uk/Line/${l.id}/Status?app_key=${API_KEY}`)
+        .then((response) => response.json())
+        .then((data) => [l.name, data[0] || null])
+        .catch(() => [l.name, null]),
+    ),
+  )
+    .then((entries) => setLineStatuses(Object.fromEntries(entries)))
     .finally(() => setLineStatusLoading(false));
   // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [showLineStatusFallback, lineFilter]);
+}, [fallbackKey, station]);
 
 const filteredArrivals = arrivals.filter((p) => {
   if (lineFilter && p.lineName !== lineFilter) return false;
@@ -265,7 +290,8 @@ const board = groupArrivals(filteredArrivals);
       <h1>Stations</h1>
 
       <p>
-        Search for a Tube, Overground, DLR, Elizabeth line or Tram station to see live arrivals.
+        Search for a Tube, Overground, DLR, Elizabeth line, Tram or National Rail station to see
+        live arrivals — or service status, for stations without a live feed.
       </p>
 
       {!station && (
@@ -414,7 +440,7 @@ const board = groupArrivals(filteredArrivals);
           {loading && <p>Loading arrivals...</p>}
           {error && <p className="error">{error}</p>}
 
-          {!loading && !error && arrivals.length === 0 && (
+          {!loading && !error && arrivals.length === 0 && !showLineStatusFallback && (
             <p>No live arrivals available for this station right now.</p>
           )}
 
@@ -447,40 +473,48 @@ const board = groupArrivals(filteredArrivals);
           {showLineStatusFallback && (
             <div className="line-status-fallback">
               <p className="line-status-fallback-note">
-                {lineFilter} is run by a separate National Rail operator, so live train times
-                aren't available here — showing current service status instead.
+                {lineFilter
+                  ? `${lineFilter} is run by a separate National Rail operator, so live train times aren't available here — showing current service status instead.`
+                  : "This station's service is run by a separate National Rail operator, so live train times aren't available here — showing current service status instead."}
               </p>
 
               {lineStatusLoading && <p>Loading service status...</p>}
 
-              {!lineStatusLoading && lineStatus && (
-                <div
-                  className="line-card"
-                  style={{ borderLeft: `6px solid ${getLineColor(lineFilter).bg}` }}
-                >
-                  <div className="line-header">
-                    <h3>
-                      <span
-                        className="line-swatch"
-                        style={{ backgroundColor: getLineColor(lineFilter).bg }}
-                      />
-                      {lineFilter}
-                    </h3>
+              {!lineStatusLoading &&
+                fallbackLineNames.map((name) => {
+                  const status = lineStatuses[name];
 
-                    <span
-                      className={`status ${getStatusClass(
-                        lineStatus.lineStatuses?.[0]?.statusSeverityDescription,
-                      )}`}
+                  if (!status) return null;
+
+                  const color = getLineColor(name);
+                  const severity = status.lineStatuses?.[0];
+
+                  return (
+                    <div
+                      className="line-card"
+                      key={name}
+                      style={{ borderLeft: `6px solid ${color.bg}` }}
                     >
-                      {lineStatus.lineStatuses?.[0]?.statusSeverityDescription || "Unknown"}
-                    </span>
-                  </div>
+                      <div className="line-header">
+                        <h3>
+                          <span
+                            className="line-swatch"
+                            style={{ backgroundColor: color.bg }}
+                          />
+                          {name}
+                        </h3>
 
-                  {lineStatus.lineStatuses?.[0]?.reason && (
-                    <p className="reason">{lineStatus.lineStatuses[0].reason}</p>
-                  )}
-                </div>
-              )}
+                        <span
+                          className={`status ${getStatusClass(severity?.statusSeverityDescription)}`}
+                        >
+                          {severity?.statusSeverityDescription || "Unknown"}
+                        </span>
+                      </div>
+
+                      {severity?.reason && <p className="reason">{severity.reason}</p>}
+                    </div>
+                  );
+                })}
             </div>
           )}
 
