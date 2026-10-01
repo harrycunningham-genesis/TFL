@@ -2,18 +2,10 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { LINE_COLOURS, getLineColour, getReadableTextColour } from "../constants/lineColours";
-import {
-  recordStatusSnapshot,
-  getUptimeSummary,
-  pruneOldSnapshots,
-} from "../db/statusHistory";
+import { fetchStatus, fetchUptime } from "../api/backend";
 import { getFavouriteLineIds, toggleFavouriteLine } from "../utils/favourites";
 import { TIER_META, getTier } from "../utils/severity";
-
-// How far back the "X% good service" figure under each line looks — long
-// enough to smooth over a single bad day, short enough to still feel
-// current. Purely a display choice; the database itself keeps 30 days.
-const UPTIME_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+import { describeTrackedPeriod } from "../utils/trackedTime";
 
 // Which line ids the live map (TubeMap.jsx) actually knows how to draw —
 // everything in the shared colour lookup except Trams and Thameslink,
@@ -32,14 +24,6 @@ const MODE_LABELS = {
   tram: "Trams",
   "national-rail": "National Rail",
 };
-
-// TfL's live Arrivals API has no real-time predictions for National Rail
-// operators (they run their own separate systems) — but it does track
-// service-level status for some of them. Thameslink calls at several
-// stations this app already covers (Farringdon, St Pancras), so it's
-// listed here even though it isn't part of the tube/overground/etc modes
-// above. Add more national-rail line ids here if useful later.
-const NATIONAL_RAIL_LINES = ["thameslink"];
 
 // Only worth showing a "closed until…" window for disruptions TfL already
 // knows the schedule for (planned engineering work, etc.) — for a live,
@@ -78,8 +62,8 @@ function LineStatus() {
   const [lastUpdated, setLastUpdated] = useState(null);
   const [now, setNow] = useState(() => new Date());
   const [disruptionsOnly, setDisruptionsOnly] = useState(false);
-  // lineId -> { goodPercent, sampleCount } | undefined, read back out of
-  // IndexedDB — never written to directly, only ever refreshed from it.
+  // lineId -> { goodPercent, sampleCount, trackedSince, trackedHours }, from
+  // the Worker's shared history (everything tracked so far, up to 90 days).
   const [uptimeByLineId, setUptimeByLineId] = useState({});
   // Line ids someone has starred — stored in localStorage (see
   // utils/favourites.js), same idea as the recent-stations list on the
@@ -90,41 +74,27 @@ function LineStatus() {
     setFavouriteLineIds(toggleFavouriteLine(lineId));
   }
 
+  // Live status and uptime both come from the tfl-status Worker (see
+  // api/backend.js), which polls TfL once a minute and keeps the history
+  // centrally, so every visitor sees the same numbers.
   async function fetchTubeStatus() {
     try {
       setLoading(true);
 
-      const apiKey = import.meta.env.VITE_TFL_API_KEY;
-
-      const [tflResponse, nationalRailResponse] = await Promise.all([
-        fetch(
-          `https://api.tfl.gov.uk/Line/Mode/tube,overground,dlr,elizabeth-line,tram/Status?app_key=${apiKey}`,
-        ),
-        fetch(
-          `https://api.tfl.gov.uk/Line/${NATIONAL_RAIL_LINES.join(",")}/Status?app_key=${apiKey}`,
-        ),
+      const [status, uptime] = await Promise.all([
+        fetchStatus(),
+        // Uptime is a nice-to-have on top of the live status, so a failure
+        // here never hides the status itself.
+        fetchUptime().catch((err) => {
+          console.error("Failed to load uptime history", err);
+          return null;
+        }),
       ]);
 
-      if (!tflResponse.ok) {
-        throw new Error("Failed to fetch line status");
-      }
-
-      const tflLines = await tflResponse.json();
-      const nationalRailLines = nationalRailResponse.ok ? await nationalRailResponse.json() : [];
-      const allLines = [...tflLines, ...nationalRailLines];
-
-      setLines(allLines);
-      setLastUpdated(new Date());
+      setLines(status.lines);
+      setLastUpdated(status.updatedAt ? new Date(status.updatedAt) : new Date());
+      if (uptime) setUptimeByLineId(uptime);
       setError(null);
-
-      // Fire-and-forget: log this poll's tier per line to IndexedDB for the
-      // uptime history feature below. Never awaited and never lets a
-      // storage failure affect the page — the whole point of local history
-      // is that it's a nice-to-have layered on top of the live status,
-      // never something the live status depends on.
-      recordStatusSnapshot(
-        allLines.map((line) => ({ lineId: line.id, tier: getTier(line) })),
-      ).catch((err) => console.error("Failed to record status history", err));
     } catch (err) {
       setError(err.message);
     } finally {
@@ -135,43 +105,10 @@ function LineStatus() {
   useEffect(() => {
     fetchTubeStatus();
 
-    // Refresh every 60 seconds
+    // The Worker refreshes once a minute, so there's no point polling faster.
     const interval = setInterval(fetchTubeStatus, 60000);
-
-    // Trim anything older than 30 days once per page load — cheap once
-    // the store's already pruned, and keeps a machine left running for
-    // months from growing the database forever.
-    pruneOldSnapshots().catch((err) =>
-      console.error("Failed to prune status history", err),
-    );
-
     return () => clearInterval(interval);
   }, []);
-
-  // Whenever a fresh poll comes in, re-read each line's rolling uptime back
-  // out of IndexedDB. This is a read of what recordStatusSnapshot() above
-  // just wrote (plus everything written on every previous poll/session),
-  // not a recomputation from `lines` itself — `lines` only ever has the
-  // single latest status, never history.
-  useEffect(() => {
-    if (lines.length === 0) return undefined;
-    let cancelled = false;
-
-    Promise.all(
-      lines.map(async (line) => {
-        const summary = await getUptimeSummary(line.id, UPTIME_WINDOW_MS);
-        return [line.id, summary];
-      }),
-    ).then((entries) => {
-      if (!cancelled) {
-        setUptimeByLineId(Object.fromEntries(entries));
-      }
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [lines]);
 
   // Ticks the "Updated Xs ago" label once a second, independent of the
   // 60-second data refresh above.
@@ -219,7 +156,9 @@ function LineStatus() {
         {plannedWindow && <p className="planned-window">{plannedWindow}</p>}
 
         {uptime ? (
-          <p className="uptime-summary">{uptime.goodPercent}% good service, last 7 days</p>
+          <p className="uptime-summary">
+            {uptime.goodPercent}% good service, {describeTrackedPeriod(uptime.trackedSince, now)}
+          </p>
         ) : (
           <p className="uptime-summary uptime-summary-empty">
             History tracking started — check back soon

@@ -4,14 +4,8 @@ import { Link } from "react-router-dom";
 import { getFavouriteLineIds, getFavouriteTrips } from "../utils/favourites";
 import { getLineColour } from "../constants/lineColours";
 import { TIER_META, getTier } from "../utils/severity";
-import { getUptimeSummary } from "../db/statusHistory";
-
-// Mirrors the two-fetch shape LineStatus.jsx uses — the Home page needs to
-// be able to resolve ANY favourited line's live status, including a
-// favourited Thameslink or Tram entry, so it has to look in the same place
-// Line Status does rather than a narrower list.
-const NATIONAL_RAIL_LINES = ["thameslink"];
-const UPTIME_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+import { fetchStatus, fetchUptime } from "../api/backend";
+import { describeTrackedPeriod } from "../utils/trackedTime";
 
 function Home() {
   // Read once on mount — favouriting happens on other pages, and
@@ -35,35 +29,20 @@ function Home() {
 
     async function loadFavouriteLineStatuses() {
       try {
-        const apiKey = import.meta.env.VITE_TFL_API_KEY;
-
-        const [tflResponse, nationalRailResponse] = await Promise.all([
-          fetch(
-            `https://api.tfl.gov.uk/Line/Mode/tube,overground,dlr,elizabeth-line,tram/Status?app_key=${apiKey}`,
-          ),
-          fetch(
-            `https://api.tfl.gov.uk/Line/${NATIONAL_RAIL_LINES.join(",")}/Status?app_key=${apiKey}`,
-          ),
+        // Same Worker endpoints Line Status uses, so the tiles always agree
+        // with that page (including Thameslink and Trams).
+        const [status, uptimeByLineId] = await Promise.all([
+          fetchStatus(),
+          fetchUptime().catch(() => ({})),
         ]);
 
-        const tflLines = tflResponse.ok ? await tflResponse.json() : [];
-        const nationalRailLines = nationalRailResponse.ok
-          ? await nationalRailResponse.json()
-          : [];
-        const allLines = [...tflLines, ...nationalRailLines];
-
-        const favourites = allLines.filter((line) => favouriteLineIds.includes(line.id));
-
-        // Each tile also wants its rolling uptime figure — the same one
-        // Line Status shows, read back out of the same IndexedDB history
-        // (see db/statusHistory.js) rather than recomputed here.
-        const withUptime = await Promise.all(
-          favourites.map(async (line) => ({
+        const withUptime = status.lines
+          .filter((line) => favouriteLineIds.includes(line.id))
+          .map((line) => ({
             line,
             tier: getTier(line),
-            uptime: await getUptimeSummary(line.id, UPTIME_WINDOW_MS),
-          })),
-        );
+            uptime: uptimeByLineId[line.id],
+          }));
 
         if (!cancelled) {
           setFavouriteLineStatuses(withUptime);
@@ -146,7 +125,7 @@ function Home() {
 
                       {uptime && (
                         <span className="favourite-line-tile-uptime">
-                          {uptime.goodPercent}% good, last 7 days
+                          {uptime.goodPercent}% good, {describeTrackedPeriod(uptime.trackedSince)}
                         </span>
                       )}
                     </Link>

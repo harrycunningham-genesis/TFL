@@ -82,11 +82,12 @@ async function collect(env, scheduledTime) {
   for (const line of lines) {
     const tier = getTier(line);
     // `tier` is always one of TIERS (getTier falls back to "unknown"), so
-    // interpolating it as a column name is safe.
+    // interpolating it into a column name is safe.
+    const column = `n_${tier}`;
     statements.push(
       env.DB.prepare(
-        `INSERT INTO hourly_status (line_id, hour, ${tier}) VALUES (?1, ?2, 1)
-         ON CONFLICT (line_id, hour) DO UPDATE SET ${tier} = ${tier} + 1`,
+        `INSERT INTO hourly_status (line_id, hour, ${column}) VALUES (?1, ?2, 1)
+         ON CONFLICT (line_id, hour) DO UPDATE SET ${column} = ${column} + 1`,
       ).bind(line.id, hour),
       env.DB.prepare(
         `INSERT INTO minute_status (line_id, slot, t, tier) VALUES (?1, ?2, ?3, ?4)
@@ -96,8 +97,8 @@ async function collect(env, scheduledTime) {
   }
   statements.push(
     env.DB.prepare(
-      `INSERT INTO latest_status (id, updated_at, payload) VALUES (1, ?1, ?2)
-       ON CONFLICT (id) DO UPDATE SET updated_at = excluded.updated_at, payload = excluded.payload`,
+      `INSERT INTO latest_status (id, updated_at, body) VALUES (1, ?1, ?2)
+       ON CONFLICT (id) DO UPDATE SET updated_at = excluded.updated_at, body = excluded.body`,
     ).bind(Date.now(), JSON.stringify(lines)),
   );
 
@@ -117,8 +118,8 @@ async function collect(env, scheduledTime) {
 async function computeUptimeSummary(env, now) {
   const { results } = await env.DB.prepare(
     `SELECT line_id,
-            SUM(good) AS good,
-            SUM(good + minor + moderate + severe + unknown) AS total,
+            SUM(n_good) AS good,
+            SUM(n_good + n_minor + n_moderate + n_severe + n_unknown) AS total,
             MIN(hour) AS first_hour,
             COUNT(*) AS hours
        FROM hourly_status
@@ -156,13 +157,13 @@ async function rebuildUptimeSummary(env, now) {
 
 async function handleStatus(env) {
   const row = await env.DB.prepare(
-    "SELECT updated_at, payload FROM latest_status WHERE id = 1",
+    "SELECT updated_at, body FROM latest_status WHERE id = 1",
   ).first();
   if (!row) {
     return json({ error: "No data collected yet" }, { status: 503 });
   }
   return json(
-    { updatedAt: row.updated_at, lines: JSON.parse(row.payload) },
+    { updatedAt: row.updated_at, lines: JSON.parse(row.body) },
     { headers: { "Cache-Control": "public, max-age=30" } },
   );
 }
@@ -204,7 +205,7 @@ async function handleHistory(env, url) {
     points = results.map((row) => ({ ...toPoint(row.t, { [row.tier]: 1 }), tier: row.tier }));
   } else {
     const since = bucket === "day" ? floorTo(now, DAY_MS) - (days - 1) * DAY_MS : now - days * DAY_MS;
-    const tierSums = TIERS.map((tier) => `SUM(${tier}) AS ${tier}`).join(", ");
+    const tierSums = TIERS.map((tier) => `SUM(n_${tier}) AS ${tier}`).join(", ");
     // Day buckets are UTC days.
     const bucketExpr = bucket === "day" ? `(hour / ${DAY_MS}) * ${DAY_MS}` : "hour";
 

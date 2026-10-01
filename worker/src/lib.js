@@ -11,7 +11,8 @@ export const MINUTE_SLOTS = 180;
 export const RETENTION_DAYS = 90;
 
 // Every tier getTier() can return. These double as column names in
-// hourly_status, so this list is also the whitelist for building SQL.
+// hourly_status (as n_<tier>), so this list is also the whitelist for
+// building SQL.
 export const TIERS = ["good", "minor", "moderate", "severe", "unknown"];
 
 export const TFL_MODES = ["tube", "overground", "dlr", "elizabeth-line", "tram"];
