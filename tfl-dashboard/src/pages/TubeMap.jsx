@@ -6,7 +6,9 @@ import {
   CircleMarker,
   Tooltip,
   useMapEvents,
+  useMap,
 } from "react-leaflet";
+import { useSearchParams } from "react-router-dom";
 import { DomEvent } from "leaflet";
 import { getLineColour } from "../constants/lineColours";
 import "leaflet/dist/leaflet.css";
@@ -64,6 +66,20 @@ const OVERGROUND_NETWORK_MODES = ["overground"];
 // etc.), and this map only wants this one, so it's fetched by line id
 // directly rather than via Line/Mode like the two networks above.
 const THAMESLINK_LINE_ID = "thameslink";
+
+// Used to decide, when a "?line=" deep link arrives (from the Line Status
+// page's "View on live map" links), whether to switch the radio group to
+// Overground before trying to select that line — the six Overground lines
+// aren't part of TUBE_NETWORK_MODES above, so without this a deep link to
+// e.g. Lioness would silently do nothing.
+const OVERGROUND_LINE_IDS = new Set([
+  "liberty",
+  "lioness",
+  "mildmay",
+  "suffragette",
+  "weaver",
+  "windrush",
+]);
 
 function hexToHsl(hex) {
   const r = parseInt(hex.slice(1, 3), 16) / 255;
@@ -144,7 +160,42 @@ function ClearSelectionOnMapClick({ onClear }) {
   return null;
 }
 
+// Pans/zooms the map to fit a deep-linked line's stations, but only once —
+// the first time that line's stations are available. After that the user's
+// own pan/zoom takes over; this never fights them again, even if the line's
+// station list changes shape on a later poll.
+function FitBoundsOnce({ lineId, stations }) {
+  const map = useMap();
+  const appliedForRef = useRef(null);
+
+  useEffect(() => {
+    if (
+      !lineId ||
+      stations.length === 0 ||
+      appliedForRef.current === lineId
+    ) {
+      return;
+    }
+
+    const bounds = stations.map((station) => [station.lat, station.lng]);
+    map.fitBounds(bounds, { padding: [40, 40] });
+    appliedForRef.current = lineId;
+  }, [lineId, stations, map]);
+
+  return null;
+}
+
 function TubeMap() {
+  // "?line={id}" — arrives from the Line Status page's "View on live map"
+  // links. Read once; TubeMap doesn't need to react to it changing after
+  // load (a fresh deep link is a fresh page load anyway).
+  const [searchParams] = useSearchParams();
+  const deepLinkedLineId = searchParams.get("line");
+  // Guards the selection effect below so it only ever auto-selects the
+  // deep-linked line once — after that, clicking around the map to change
+  // the selection must not keep getting overridden back to the deep link.
+  const deepLinkAppliedRef = useRef(false);
+
   const [tubeLines, setTubeLines] = useState([]);
   const [tubeLoading, setTubeLoading] = useState(true);
   const [tubeError, setTubeError] = useState(null);
@@ -170,8 +221,14 @@ function TubeMap() {
   const hasSelection = selectedLineIds.length > 0;
 
   // Exactly one network is ever drawn at a time — a radio group, not
-  // independent checkboxes — so the map itself stays readable.
-  const [networkMode, setNetworkMode] = useState("tube");
+  // independent checkboxes — so the map itself stays readable. Starts on
+  // Overground or Thameslink only when a "?line=" deep link points at one of
+  // their lines — otherwise Tubes, same as before.
+  const [networkMode, setNetworkMode] = useState(() => {
+    if (deepLinkedLineId === THAMESLINK_LINE_ID) return "thameslink";
+    if (deepLinkedLineId && OVERGROUND_LINE_IDS.has(deepLinkedLineId)) return "overground";
+    return "tube";
+  });
   const showTubes = networkMode === "tube";
   const showOverground = networkMode === "overground";
   const showThameslink = networkMode === "thameslink";
@@ -189,6 +246,22 @@ function TubeMap() {
     ],
     [showTubes, showOverground, showThameslink, tubeLines, overgroundLines, thameslinkLines],
   );
+
+  // Once the deep-linked line has actually loaded into activeLines (which
+  // only happens once networkMode's initial value above has picked the
+  // right network and that network's fetch has completed), select it —
+  // reusing the same click-to-highlight state as a manual click, so it
+  // lights up and the background greys out exactly the same way.
+  useEffect(() => {
+    if (!deepLinkedLineId || deepLinkAppliedRef.current) return;
+
+    const isLoaded = activeLines.some((line) => line.id === deepLinkedLineId);
+    if (!isLoaded) return;
+
+    setSelectedLineIds([deepLinkedLineId]);
+    setSelectedStationId(null);
+    deepLinkAppliedRef.current = true;
+  }, [activeLines, deepLinkedLineId]);
 
   // One {id, initialLatLng} snapshot per currently-visible train — React
   // only needs this to mount/unmount train markers when trains
@@ -729,6 +802,15 @@ function TubeMap() {
           scrollWheelZoom
         >
           <ClearSelectionOnMapClick onClear={clearSelection} />
+
+          {deepLinkedLineId && (
+            <FitBoundsOnce
+              lineId={deepLinkedLineId}
+              stations={stations.filter((station) =>
+                station.lineIds.includes(deepLinkedLineId),
+              )}
+            />
+          )}
 
           <TileLayer
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'

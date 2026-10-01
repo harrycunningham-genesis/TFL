@@ -1,6 +1,13 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 
 import { getRecentStations, addRecentStation } from "../utils/recentStations";
+import {
+  getFavouriteTrips,
+  isFavouriteTrip,
+  toggleFavouriteTrip,
+  removeFavouriteTrip,
+} from "../utils/favourites";
 import { getLineColor } from "../utils/lineColors";
 
 const API_KEY = import.meta.env.VITE_TFL_API_KEY;
@@ -171,6 +178,17 @@ function TripPlanner() {
     }
   }
 
+  const [favouriteTrips, setFavouriteTrips] = useState(() => getFavouriteTrips());
+  const currentTripIsFavourited = isFavouriteTrip(fromStation, toStation);
+
+  // "?from={id}&to={id}" — arrives from a favourite-trip card on the Home
+  // page. Matched against the saved favourites list (rather than an
+  // arbitrary station lookup) since that's the only thing that ever links
+  // here this way, and it means no extra StopPoint fetch is needed — the
+  // favourite already carries the station's name alongside its id.
+  const [searchParams] = useSearchParams();
+  const deepLinkAppliedRef = useRef(false);
+
   async function resolveStopId(id) {
     // Interchange stations (e.g. King's Cross) resolve to a hub id that the
     // Journey Planner can't route from directly — look up a rail-specific
@@ -210,10 +228,10 @@ function TripPlanner() {
     setSuggestions(data.matches || []);
   }
 
-  async function planJourney() {
-    if (!fromStation || !toStation) return;
+  async function planJourneyFor(fromSt, toSt) {
+    if (!fromSt || !toSt) return;
 
-    if (fromStation.id === toStation.id) {
+    if (fromSt.id === toSt.id) {
       setJourneys([]);
       setError("Please choose two different stations.");
       setSearched(true);
@@ -224,8 +242,8 @@ function TripPlanner() {
       setLoading(true);
       setError(null);
 
-      const fromId = await resolveStopId(fromStation.id);
-      const toId = await resolveStopId(toStation.id);
+      const fromId = await resolveStopId(fromSt.id);
+      const toId = await resolveStopId(toSt.id);
 
       let url = `https://api.tfl.gov.uk/Journey/JourneyResults/${fromId}/to/${toId}?app_key=${API_KEY}`;
 
@@ -255,6 +273,52 @@ function TripPlanner() {
       setSearched(true);
     }
   }
+
+  async function planJourney() {
+    await planJourneyFor(fromStation, toStation);
+  }
+
+  function handleToggleFavouriteTrip() {
+    if (!fromStation || !toStation) return;
+    setFavouriteTrips(toggleFavouriteTrip(fromStation, toStation));
+  }
+
+  function selectFavouriteTrip(trip) {
+    setFromQuery(trip.from.name);
+    setFromStation(trip.from);
+    setFromSuggestions([]);
+
+    setToQuery(trip.to.name);
+    setToStation(trip.to);
+    setToSuggestions([]);
+
+    planJourneyFor(trip.from, trip.to);
+  }
+
+  function handleRemoveFavouriteTrip(trip, event) {
+    event.stopPropagation();
+    setFavouriteTrips(removeFavouriteTrip(trip.from, trip.to));
+  }
+
+  // Applies the "?from=&to=" deep link at most once, and only once its
+  // match has actually been found in favouriteTrips (which loads
+  // synchronously from localStorage on mount, so in practice this runs
+  // on the very first render where searchParams has both ids).
+  useEffect(() => {
+    if (deepLinkAppliedRef.current) return;
+
+    const fromId = searchParams.get("from");
+    const toId = searchParams.get("to");
+    if (!fromId || !toId) return;
+
+    const match = favouriteTrips.find(
+      (trip) => trip.from.id === fromId && trip.to.id === toId,
+    );
+    if (!match) return;
+
+    deepLinkAppliedRef.current = true;
+    selectFavouriteTrip(match);
+  }, [searchParams, favouriteTrips]);
 
   function formatTime(dateTime) {
     return new Date(dateTime).toLocaleTimeString([], {
@@ -347,13 +411,60 @@ function TripPlanner() {
         </div>
       )}
 
-      <button
-        className="plan-button"
-        onClick={planJourney}
-        disabled={!fromStation || !toStation || loading}
-      >
-        {loading ? "Planning..." : "Plan Journey"}
-      </button>
+      <div className="trip-actions">
+        <button
+          className="plan-button"
+          onClick={planJourney}
+          disabled={!fromStation || !toStation || loading}
+        >
+          {loading ? "Planning..." : "Plan Journey"}
+        </button>
+
+        <button
+          type="button"
+          className={`favourite-toggle-button ${currentTripIsFavourited ? "favourite-toggle-button-active" : ""}`}
+          onClick={handleToggleFavouriteTrip}
+          disabled={!fromStation || !toStation}
+          aria-label={
+            currentTripIsFavourited ? "Remove this trip from favourites" : "Save this trip as a favourite"
+          }
+          title={currentTripIsFavourited ? "Remove from favourites" : "Save as favourite"}
+        >
+          {currentTripIsFavourited ? "★ Favourited" : "☆ Favourite"}
+        </button>
+      </div>
+
+      {favouriteTrips.length > 0 && (
+        <div className="favourite-trips">
+          <span className="favourite-trips-label">Favourite trips</span>
+          <div className="favourite-trip-chips">
+            {favouriteTrips.map((trip) => (
+              <button
+                type="button"
+                key={trip.id}
+                className="favourite-trip-chip"
+                onClick={() => selectFavouriteTrip(trip)}
+              >
+                {trip.from.name} → {trip.to.name}
+                <span
+                  className="favourite-trip-remove"
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`Remove ${trip.from.name} to ${trip.to.name} from favourites`}
+                  onClick={(event) => handleRemoveFavouriteTrip(trip, event)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      handleRemoveFavouriteTrip(trip, event);
+                    }
+                  }}
+                >
+                  ×
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {error && <p className="error">{error}</p>}
 
