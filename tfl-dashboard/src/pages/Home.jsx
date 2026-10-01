@@ -167,6 +167,11 @@ function Home() {
                   <span className="favourite-trip-tile-route">
                     {trip.from.name} <span className="favourite-trip-tile-arrow">→</span>{" "}
                     {trip.to.name}
+                    {trip.timeMode && trip.travelTime && (
+                      <span className="favourite-trip-time">
+                        {trip.timeMode === "arrive" ? "by" : "at"} {trip.travelTime}
+                      </span>
+                    )}
                   </span>
                   <span className="favourite-trip-tile-cta">Plan again →</span>
                 </Link>

@@ -313,7 +313,12 @@ function TripPlanner() {
     setSuggestions(data.matches || []);
   }
 
-  async function planJourneyFor(fromSt, toSt) {
+  // timeOverride lets a caller (selectFavouriteTrip) pass the time context
+  // explicitly rather than relying on timeMode/travelDate/travelTime state —
+  // those are set just beforehand via setTimeMode etc., but React state
+  // updates aren't visible in this closure until the next render, so
+  // reading them here would still see the *previous* values.
+  async function planJourneyFor(fromSt, toSt, timeOverride) {
     if (!fromSt || !toSt) return;
 
     if (fromSt.id === toSt.id) {
@@ -332,10 +337,14 @@ function TripPlanner() {
 
       let url = `https://api.tfl.gov.uk/Journey/JourneyResults/${fromId}/to/${toId}?app_key=${API_KEY}`;
 
-      if (timeMode !== "now" && travelDate && travelTime) {
-        url += `&date=${travelDate.replaceAll("-", "")}`;
-        url += `&time=${travelTime.replace(":", "")}`;
-        url += `&timeIs=${timeMode === "arrive" ? "arriving" : "departing"}`;
+      const effectiveMode = timeOverride?.timeMode ?? timeMode;
+      const effectiveDate = timeOverride?.travelDate ?? travelDate;
+      const effectiveTime = timeOverride?.travelTime ?? travelTime;
+
+      if (effectiveMode !== "now" && effectiveDate && effectiveTime) {
+        url += `&date=${effectiveDate.replaceAll("-", "")}`;
+        url += `&time=${effectiveTime.replace(":", "")}`;
+        url += `&timeIs=${effectiveMode === "arrive" ? "arriving" : "departing"}`;
       }
 
       const response = await fetch(url);
@@ -365,7 +374,11 @@ function TripPlanner() {
 
   function handleToggleFavouriteTrip() {
     if (!fromStation || !toStation) return;
-    setFavouriteTrips(toggleFavouriteTrip(fromStation, toStation));
+
+    const timeContext =
+      timeMode !== "now" && travelTime ? { timeMode, travelTime } : null;
+
+    setFavouriteTrips(toggleFavouriteTrip(fromStation, toStation, timeContext));
   }
 
   function selectFavouriteTrip(trip) {
@@ -377,7 +390,26 @@ function TripPlanner() {
     setToStation(trip.to);
     setToSuggestions([]);
 
-    planJourneyFor(trip.from, trip.to);
+    // A saved favourite only ever carries a time-of-day (see favourites.js)
+    // — applied against today's date, whichever day the favourite happens
+    // to be used on.
+    let timeOverride = { timeMode: "now" };
+
+    if (trip.timeMode && trip.travelTime) {
+      const now = new Date();
+      const pad = (n) => String(n).padStart(2, "0");
+      const today = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+
+      setTimeMode(trip.timeMode);
+      setTravelDate(today);
+      setTravelTime(trip.travelTime);
+
+      timeOverride = { timeMode: trip.timeMode, travelDate: today, travelTime: trip.travelTime };
+    } else {
+      setTimeMode("now");
+    }
+
+    planJourneyFor(trip.from, trip.to, timeOverride);
   }
 
   function handleRemoveFavouriteTrip(trip, event) {
@@ -531,6 +563,11 @@ function TripPlanner() {
                 onClick={() => selectFavouriteTrip(trip)}
               >
                 {trip.from.name} → {trip.to.name}
+                {trip.timeMode && trip.travelTime && (
+                  <span className="favourite-trip-time">
+                    {trip.timeMode === "arrive" ? "by" : "at"} {trip.travelTime}
+                  </span>
+                )}
                 <span
                   className="favourite-trip-remove"
                   role="button"

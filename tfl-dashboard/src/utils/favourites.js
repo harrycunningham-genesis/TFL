@@ -52,7 +52,12 @@ export function isFavouriteTrip(from, to) {
   return getFavouriteTrips().some((trip) => trip.id === id);
 }
 
-export function addFavouriteTrip(from, to) {
+// timeContext is optional: { timeMode: "depart" | "arrive", travelTime: "HH:mm" }.
+// Deliberately stores only the time-of-day, not the date it was planned on —
+// a favourite is meant to be reused indefinitely (e.g. a daily commute), so
+// a fixed date would just go stale after that day passes. Whichever date
+// the favourite is used on later, this time is applied to that day.
+export function addFavouriteTrip(from, to, timeContext) {
   const id = tripId(from, to);
   const withoutDuplicate = getFavouriteTrips().filter((trip) => trip.id !== id);
   const updated = [
@@ -60,6 +65,9 @@ export function addFavouriteTrip(from, to) {
       id,
       from: { id: from.id, name: from.name },
       to: { id: to.id, name: to.name },
+      ...(timeContext
+        ? { timeMode: timeContext.timeMode, travelTime: timeContext.travelTime }
+        : {}),
     },
     ...withoutDuplicate,
   ].slice(0, MAX_FAVOURITE_TRIPS);
@@ -73,10 +81,10 @@ export function removeFavouriteTrip(from, to) {
   return writeList(FAVOURITE_TRIPS_KEY, updated);
 }
 
-export function toggleFavouriteTrip(from, to) {
+export function toggleFavouriteTrip(from, to, timeContext) {
   return isFavouriteTrip(from, to)
     ? removeFavouriteTrip(from, to)
-    : addFavouriteTrip(from, to);
+    : addFavouriteTrip(from, to, timeContext);
 }
 
 // ---- Favourite lines ----
