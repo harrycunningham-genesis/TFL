@@ -1,0 +1,20 @@
+name = "tfl-status"
+main = "src/index.js"
+compatibility_date = "2025-09-01"
+account_id = "5aecdd948a6395629a269e213e98d280"
+
+# Poll TfL once a minute. Each run writes the latest snapshot, the
+# minute-resolution ring buffer and the hourly counters (see src/index.js).
+[triggers]
+crons = ["* * * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "tfl-db"
+database_id = "ca854123-e7c9-4ce7-835b-85a8ddfedfe2"
+
+# Secrets (never committed):
+#   npx wrangler secret put TFL_API_KEY
+#
+# Optional variable, only for pointing at a fake TfL when testing locally:
+#   TFL_BASE_URL = "http://localhost:8788"
