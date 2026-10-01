@@ -7,6 +7,7 @@ import { defineConfig } from 'vitest/config'
 
 // https://vite.dev/config/
 export default defineConfig({
+  base: '/TFL/',
   plugins: [react()],
   test: {
     environment: 'jsdom',
