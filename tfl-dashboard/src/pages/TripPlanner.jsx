@@ -12,14 +12,57 @@ import { getLineColor } from "../utils/lineColors";
 
 const API_KEY = import.meta.env.VITE_TFL_API_KEY;
 const RECENTS_KEY = "tfl_recent_stations";
+
+// Modes with live arrivals via TfL's Arrivals API — used to resolve which
+// child stop of an interchange hub to actually plan a journey from.
 const RAIL_MODES = ["tube", "overground", "dlr", "elizabeth-line", "tram"];
-const RAIL_MODES_PARAM = RAIL_MODES.join(",");
+
+// Search additionally includes "national-rail" so National-Rail-only
+// stations (e.g. Thameslink stops like Radlett, with no Tube/Overground/etc
+// service) show up in the dropdown too — journey planning works for them
+// the same as any other station once resolveStopId has run.
+const SEARCH_MODES_PARAM = [...RAIL_MODES, "national-rail"].join(",");
+
+// Photon (komoot's free, keyless geocoder, built on OpenStreetMap data) for
+// arbitrary addresses/places — unlike TfL's StopPoint search, which only
+// ever matches actual stations. Chosen over Nominatim (OpenStreetMap's own
+// geocoder) because Nominatim's public API doesn't send CORS headers, so it
+// can't be called directly from a browser; Photon does.
+const PHOTON_SEARCH_URL = "https://photon.komoot.io/api/";
+// Biases results towards London without hard-restricting to it, so a
+// relevant place just outside the city (e.g. an airport) can still surface.
+const LONDON_BIAS = { lat: 51.5074, lon: -0.1278 };
+
+async function searchPlaces(value) {
+  const url = `${PHOTON_SEARCH_URL}?q=${encodeURIComponent(value)}&limit=5&lat=${LONDON_BIAS.lat}&lon=${LONDON_BIAS.lon}&lang=en`;
+
+  try {
+    const response = await fetch(url);
+    if (!response.ok) return [];
+
+    const data = await response.json();
+    return data.features || [];
+  } catch {
+    return [];
+  }
+}
+
+// Builds a short, readable label from a Photon feature — e.g. "Baker
+// Street, London" rather than its full multi-line address — deduping
+// anywhere the name is repeated in the street/city.
+function formatPlaceLabel(feature) {
+  const p = feature.properties;
+  const parts = [p.name, p.street, p.city, p.state].filter(Boolean);
+  return [...new Set(parts)].slice(0, 2).join(", ");
+}
 
 function StationField({ label, query, setQuery, station, setStation, suggestions, setSuggestions, onSearch }) {
   const [recents, setRecents] = useState(() => getRecentStations(RECENTS_KEY));
+  const [placeSuggestions, setPlaceSuggestions] = useState([]);
   const [focused, setFocused] = useState(false);
   const [locating, setLocating] = useState(false);
   const [locationError, setLocationError] = useState(null);
+  const placeSearchTimeoutRef = useRef(null);
 
   async function handleChange(value) {
     setQuery(value);
@@ -28,19 +71,38 @@ function StationField({ label, query, setQuery, station, setStation, suggestions
 
     if (value.trim().length < 3) {
       setSuggestions([]);
+      setPlaceSuggestions([]);
       return;
     }
 
     onSearch(value);
+
+    // Debounced separately from the (already-instant) TfL station search —
+    // Photon is a third-party service, so it's worth not hitting it on
+    // every single keystroke.
+    clearTimeout(placeSearchTimeoutRef.current);
+    placeSearchTimeoutRef.current = setTimeout(async () => {
+      setPlaceSuggestions(await searchPlaces(value));
+    }, 300);
   }
 
   function selectStation(match) {
     setStation(match);
     setQuery(match.name);
     setSuggestions([]);
+    setPlaceSuggestions([]);
     setFocused(false);
     setLocationError(null);
     setRecents(addRecentStation(RECENTS_KEY, { id: match.id, name: match.name }));
+  }
+
+  function selectPlace(feature) {
+    const [lon, lat] = feature.geometry.coordinates;
+
+    // Same "lat,lon" shape as "Use my location" below — TfL's Journey
+    // Planner accepts it directly as either endpoint, no StopPoint id
+    // needed.
+    selectStation({ id: `${lat},${lon}`, name: formatPlaceLabel(feature) });
   }
 
   function useMyLocation() {
@@ -61,6 +123,7 @@ function StationField({ label, query, setQuery, station, setStation, suggestions
         setStation({ id: `${latitude},${longitude}`, name: "My Location" });
         setQuery("My Location");
         setSuggestions([]);
+        setPlaceSuggestions([]);
         setFocused(false);
         setLocating(false);
       },
@@ -91,7 +154,7 @@ function StationField({ label, query, setQuery, station, setStation, suggestions
           onChange={(e) => handleChange(e.target.value)}
           onFocus={() => setFocused(true)}
           onBlur={() => setTimeout(() => setFocused(false), 150)}
-          placeholder="Search for a station"
+          placeholder="Search for a station or address"
         />
 
         <button
@@ -125,19 +188,41 @@ function StationField({ label, query, setQuery, station, setStation, suggestions
         </ul>
       )}
 
-      {suggestions.length > 0 && (
+      {(suggestions.length > 0 || placeSuggestions.length > 0) && (
         <ul className="suggestions">
-          {suggestions.map((match) => (
-            <li key={match.id}>
-              <button
-                type="button"
-                className="suggestion-item"
-                onClick={() => selectStation(match)}
-              >
-                {match.name}
-              </button>
-            </li>
-          ))}
+          {suggestions.length > 0 && (
+            <>
+              <li className="suggestions-label">Stations</li>
+              {suggestions.map((match) => (
+                <li key={match.id}>
+                  <button
+                    type="button"
+                    className="suggestion-item"
+                    onClick={() => selectStation(match)}
+                  >
+                    {match.name}
+                  </button>
+                </li>
+              ))}
+            </>
+          )}
+
+          {placeSuggestions.length > 0 && (
+            <>
+              <li className="suggestions-label">Places</li>
+              {placeSuggestions.map((feature) => (
+                <li key={`${feature.properties.osm_type}-${feature.properties.osm_id}`}>
+                  <button
+                    type="button"
+                    className="suggestion-item"
+                    onClick={() => selectPlace(feature)}
+                  >
+                    📍 {formatPlaceLabel(feature)}
+                  </button>
+                </li>
+              ))}
+            </>
+          )}
         </ul>
       )}
     </div>
@@ -222,7 +307,7 @@ function TripPlanner() {
 
   async function searchStations(value, setSuggestions) {
     const response = await fetch(
-      `https://api.tfl.gov.uk/StopPoint/Search/${encodeURIComponent(value)}?modes=${RAIL_MODES_PARAM}&app_key=${API_KEY}`,
+      `https://api.tfl.gov.uk/StopPoint/Search/${encodeURIComponent(value)}?modes=${SEARCH_MODES_PARAM}&app_key=${API_KEY}`,
     );
     const data = await response.json();
     setSuggestions(data.matches || []);
@@ -331,8 +416,8 @@ function TripPlanner() {
     <div className="page">
       <h1>Plan a Trip</h1>
       <p>
-        Find the best way to get between two stations across the TfL network — or tap 📍 to
-        plan from your current location.
+        Find the best way to get between two stations, addresses or places across London — or
+        tap 📍 to plan from your current location.
       </p>
 
       <div className="trip-fields">
